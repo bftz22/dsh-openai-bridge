@@ -27,6 +27,10 @@ bash（macOS/Linux）/ PowerShell（Windows）/ 文件系统 / 子代理 / todo 
 - **会话管理**：长驻会话（persistent）/ 一次性会话（per-request）、`X-DSH-Session` 多会话隔离、
   `/clear`、`/new`、`/help` 内置命令
 - **工具过程展示**：Agent 每步调用（工具名 + 参数 + 结果/错误）都实时出现在回复里
+- **推理过程透传**（可选）：`DSH_BRIDGE_SHOW_REASONING=1` 时输出
+  `delta.reasoning_content`（DeepSeek 官方 API 同款非标准字段）
+- **会话存档治理**：`.sessions/` 自动只保留最新 N 个（默认 20），不再无界增长
+- **开机自启**（Windows）：install.ps1 自动注册「启动」文件夹，登录即自动运行
 - **高容错**：路径容错（`/v1`、`/v1/chat/completions` 均可）、消息格式容错（字符串/内容块数组）、
   会话存档冲突免疫（随机前缀 + 代际号，重启永不撞车）
 - **一键安装**：Windows / macOS / Linux 脚本自动完成全部部署（含国内镜像加速、npx 兜底）
@@ -95,13 +99,14 @@ chmod +x install.sh
 | `cordis-windows.yml` | dsh 运行时配置（Windows：PowerShell 执行器） |
 | `install.ps1` / `install.sh` | 一键安装脚本（Windows / macOS·Linux） |
 | `uninstall.ps1` / `uninstall.sh` | 卸载部署文件（`--remove-repo` 可连仓库一起删） |
+| `autostart-bridge.bat` | 开机自启助手（install.ps1 自动注册到「启动」文件夹） |
 | `.env.example` | 环境变量模板（复制为 `.env` 使用） |
 | `guard.cs` / `guard.exe` | 危险命令拦截闸（Windows，见「安全防护」） |
 | `watchdog.cmd` | 看门狗：node 退出后 3 秒自动重启（防误杀/崩溃） |
 | `install-guard.ps1` | 编译并安装 guard.exe，写入 `.env` 的 `DSH_PWSH_GUARD` |
 | `install-service.ps1` / `uninstall-service.ps1` / `service-status.ps1` | 后台服务（计划任务）安装/卸载/状态检查 |
-| `docs/使用说明书-小白版.md` | 零代码经验用户手册 |
-| `package.json` | 独立目录部署（方式 B）时的依赖声明 |
+| `docs/使用说明书-小白版.md` | 零代码经验用户手册（Windows） |
+| `docs/使用说明书-Mac版.md` | 零代码经验用户手册（macOS/Linux） || `package.json` | 独立目录部署（方式 B）时的依赖声明 |
 
 ## 🔧 手动安装（可选，不依赖一键脚本）
 
@@ -175,8 +180,11 @@ Windows PowerShell 对应：`$env:DEEPSEEK_API_KEY = "sk-…"` 后再 `node serv
 | `DSH_BRIDGE_MAX_TOKENS` | 无 | 每个会话的输出 token 上限 |
 | `DSH_BRIDGE_SESSION_MODE` | `persistent` | `persistent`=跨请求保留上下文；`per-request`=每次新会话 |
 | `DSH_BRIDGE_SHOW_TOOLS` | `1` | 工具过程展示开关（🔧 进度实时回显）；`0` 关闭 |
+| `DSH_BRIDGE_SHOW_REASONING` | `0` | `1` 时透传推理过程（SSE `delta.reasoning_content`，非标准字段） |
 | `DSH_BRIDGE_DEBUG` | `0` | `1` 时输出每条会话事件等详细日志（排查问题用） |
 | `DSH_BRIDGE_USE_SYSTEM_PROMPT` | `0` | `1` 时采纳请求携带的 system 消息作为 persona（见下方说明） |
+| `DSH_BRIDGE_SESSION_DIR` | `./.sessions` | 会话存档目录 |
+| `DSH_BRIDGE_MAX_SESSIONS` | `20` | 会话存档保留数量（启动时/`/clear` 时/每小时自动清理超出部分） |
 | `DSH_RUNTIME_COMMAND` | `dsh-jsonrpc-agent` | 运行时可执行文件（源码方式设为 `node`） |
 | `DSH_RUNTIME_ARGS` | `cordis.yml` | 运行时参数，空格分隔 |
 | `DSH_SYSTEM_PROMPT` | 空 | Agent 系统提示词（persona）；留空用 dsh 默认 |
@@ -240,7 +248,7 @@ Windows PowerShell 对应：`$env:DEEPSEEK_API_KEY = "sk-…"` 后再 `node serv
 | 多会话隔离 | 请求头 `X-DSH-Session: <任意id>` 使用独立会话 |
 | 重置上下文 | 对话中发送 `/clear` 或 `/new`；`/help` 查看命令 |
 | 更新 dsh | `cd ~/deepseek-harness && git pull && pnpm install && pnpm run build:lib` |
-| 清理会话存档 | 关桥后删除仓库根目录 `.sessions/`（安全，只是历史会话记录） |
+| 清理会话存档 | 自动治理：只保留最新 `DSH_BRIDGE_MAX_SESSIONS`（默认 20）个；可调大或关桥后手动删除 `.sessions/` |
 
 ## 🐛 故障排查
 
@@ -272,7 +280,8 @@ Windows PowerShell 对应：`$env:DEEPSEEK_API_KEY = "sk-…"` 后再 `node serv
 - dsh 官方 SDK 暂不支持外部工具调度/审批流，因此 Chatbox「工作模式」的原生工具调用界面
   无法对接；本桥以「工具过程展示」替代（等 dsh 开放审批流后即可原生支持）
 - dsh 处于开发者预览期（v0.1.0-rc），接口可能变化
-- 计划中：开机自启、自检脚本 `smoke-test.mjs`、推理过程（reasoning）透传
+- 计划中：README 实际截图（Chatbox 界面 + 工具轨迹）、reasoning 内容在 Chatbox 的
+  原生展示（当前仅透传数据）、macOS 开机自启一键注册（launchd）
 
 ## 📜 License
 

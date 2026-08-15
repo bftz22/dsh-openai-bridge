@@ -46,6 +46,13 @@ foreach ($t in $targets) {
   }
 }
 
+# 移除开机自启（启动文件夹入口）
+$startupBat = Join-Path ([Environment]::GetFolderPath('Startup')) "dsh-openai-bridge.bat"
+if (Test-Path $startupBat) {
+  Remove-Item $startupBat -Force
+  Say "已删除开机自启 $startupBat"
+}
+
 if ($RemoveRepo) {
   Remove-Item $RepoDir -Recurse -Force
   Say "已删除仓库 $RepoDir"

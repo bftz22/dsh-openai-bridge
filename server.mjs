@@ -30,7 +30,7 @@
 
 import http from 'node:http'
 import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -90,6 +90,14 @@ const INITIAL_PERSONA = process.env.DSH_SYSTEM_PROMPT ?? ''
 // Chatbox 工作模式每次都会发送一大段动态系统提示词，默认忽略（persona 用 .env 的
 // DSH_SYSTEM_PROMPT），避免每次请求都重建运行时、引发会话存档冲突。需要时设为 1。
 const USE_SYSTEM_PROMPT = process.env.DSH_BRIDGE_USE_SYSTEM_PROMPT === '1'
+// 是否透传推理过程：dsh 的 reasoning-delta 事件 → OpenAI SSE 的
+// delta.reasoning_content（非标准字段，DeepSeek 官方 API 同款命名）。
+// Chatbox 等客户端默认不显示该字段，但保留数据以便未来兼容；默认关闭。
+const SHOW_REASONING = process.env.DSH_BRIDGE_SHOW_REASONING === '1'
+// 会话存档治理：.sessions/ 目录最多保留的最新会话数（按修改时间），
+// 启动时 / 每次 /clear /new 时 / 每小时自动清理超出的旧存档。
+const SESSION_DIR = process.env.DSH_BRIDGE_SESSION_DIR ?? join(process.cwd(), '.sessions')
+const MAX_SESSIONS = Number(process.env.DSH_BRIDGE_MAX_SESSIONS ?? 20)
 // 本次桥实例的随机前缀：每次启动都会换新，保证会话 ID 不与磁盘上的旧存档冲突
 const SESSION_PREFIX = `chatbox-${randomUUID().slice(0, 8)}`
 // 调试模式：设为 1 时输出每条会话事件等详细日志（排查问题时开启）
@@ -195,6 +203,52 @@ function withThreadLock(thread, fn) {
     () => undefined,
   )
   return run
+}
+
+/* ------------------------------------------------------------------ */
+/* 会话存档治理：.sessions/ 无界增长 → 只保留最新的 MAX_SESSIONS 个        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 清理 .sessions/ 下超出保留数量的旧会话存档（按目录修改时间排序）。
+ * 只删除目录；当前会话永远是最新的，不会被误删。
+ * @returns {number} 删除的目录数量
+ */
+function pruneSessions() {
+  if (!Number.isFinite(MAX_SESSIONS) || MAX_SESSIONS < 1) return 0
+  let entries
+  try {
+    entries = readdirSync(SESSION_DIR, { withFileTypes: true })
+  } catch {
+    return 0 // 目录不存在/不可读，无需清理
+  }
+  const dirs = entries
+    .filter((e) => e.isDirectory())
+    .map((e) => {
+      const p = join(SESSION_DIR, e.name)
+      let mtime = 0
+      try {
+        mtime = statSync(p).mtimeMs
+      } catch {
+        /* 忽略无法 stat 的目录 */
+      }
+      return { p, mtime }
+    })
+    .sort((a, b) => b.mtime - a.mtime)
+
+  let removed = 0
+  for (const d of dirs.slice(MAX_SESSIONS)) {
+    try {
+      rmSync(d.p, { recursive: true, force: true })
+      removed++
+    } catch (err) {
+      console.error(`[bridge] 清理会话存档失败: ${d.p}: ${err.message}`)
+    }
+  }
+  if (removed) {
+    console.log(`[bridge] 会话存档治理: 清理 ${removed} 个旧存档（保留最新 ${MAX_SESSIONS} 个，目录=${SESSION_DIR}）`)
+  }
+  return removed
 }
 
 /* ------------------------------------------------------------------ */
@@ -373,6 +427,7 @@ async function handleChatCompletion(req, res) {
   const trimmed = prompt.trim()
   if (trimmed === '/clear' || trimmed === '/new') {
     resetThread(threadKey)
+    pruneSessions() // 顺带治理会话存档
     const reply = '会话已重置。这是一个全新的 dsh 会话，之前的上下文已清空。'
     if (stream) {
       writeSseHeaders(res, model)
@@ -422,21 +477,33 @@ async function handleChatCompletion(req, res) {
     } else {
       try {
         const traceLines = []
+        const reasoningParts = []
         const result = await harness.run(prompt, {
           sessionId,
           onNotification: (n) => {
-            if (!SHOW_TOOLS || n.method !== 'session.event' || n.params.sessionId !== sessionId) return
+            if (n.method !== 'session.event' || n.params.sessionId !== sessionId) return
             const ev = n.params.event
             if (!ev || typeof ev.type !== 'string') return
             const data = ev.data ?? {}
-            if (ev.type === 'tool/call') traceLines.push(toolCallLine(data))
-            else if (ev.type === 'tool/result') traceLines.push(toolResultLine(data))
+            if (SHOW_TOOLS && ev.type === 'tool/call') traceLines.push(toolCallLine(data))
+            else if (SHOW_TOOLS && ev.type === 'tool/result') traceLines.push(toolResultLine(data))
+            else if (SHOW_REASONING && ev.type === 'assistant/message') {
+              // 收集最终消息里的推理块（{ type: 'reasoning', text }）
+              const blocks = Array.isArray(data.message?.content) ? data.message.content : []
+              for (const b of blocks) {
+                if (b?.type === 'reasoning' && typeof b.text === 'string' && b.text) reasoningParts.push(b.text)
+              }
+            }
           },
         })
         const trace = traceLines.length ? `${traceLines.join('\n\n')}\n\n` : ''
         const content = `${trace}${result.finalResponse ?? ''}`
-        console.log(`[bridge] 回合结束 流式=false 最终文本=${content.length}字 工具记录=${traceLines.length}条`)
-        sendJson(res, 200, completionJson(model, content, result))
+        console.log(`[bridge] 回合结束 流式=false 最终文本=${content.length}字 工具记录=${traceLines.length}条 推理=${reasoningParts.length ? reasoningParts.join('').length + '字' : '未收集'}`)
+        const payload = completionJson(model, content, result)
+        if (SHOW_REASONING && reasoningParts.length) {
+          payload.choices[0].message.reasoning_content = reasoningParts.join('\n')
+        }
+        sendJson(res, 200, payload)
       } catch (err) {
         console.error('[bridge] dsh 执行失败:', err)
         if (!res.headersSent) {
@@ -531,6 +598,19 @@ function writeSseDelta(res, model, text) {
   )
 }
 
+/** 推理过程分片：DeepSeek 官方 API 同款非标准字段 delta.reasoning_content */
+function writeSseReasoningDelta(res, model, text) {
+  if (!text) return
+  res.write(
+    sse({
+      object: 'chat.completion.chunk',
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [{ index: 0, delta: { reasoning_content: text }, finish_reason: null }],
+    }),
+  )
+}
+
 function writeSseEnd(res, model, usage, finishReason = 'stop') {
   res.write(
     sse({
@@ -585,6 +665,12 @@ async function runStreaming(harness, sessionId, prompt, model, res) {
             finalText += text
             writeSseDelta(res, model, text)
           }
+        } else if (ev.type === 'assistant/chunk' && data.chunk?.type === 'reasoning-delta') {
+          // 推理过程透传（默认关闭，DSH_BRIDGE_SHOW_REASONING=1 开启）
+          if (SHOW_REASONING) {
+            const text = data.chunk.text ?? ''
+            if (text) writeSseReasoningDelta(res, model, text)
+          }
         } else if (ev.type === 'assistant/chunk') {
           if (DEBUG) console.log(`[bridge]   流块: ${data.chunk?.type ?? '未知'}`)
         } else if (ev.type === 'user/message') {
@@ -612,8 +698,8 @@ async function runStreaming(harness, sessionId, prompt, model, res) {
           if (kind === 'max-tokens') finishReason = 'length'
           else if (kind === 'error') finishReason = 'stop'
           else finishReason = 'stop'
-        } else if (DEBUG) {
-          console.log(`[bridge]   事件: ${ev.type}`)
+        } else {
+          if (DEBUG) console.log(`[bridge]   事件: ${ev.type}`)
         }
       },
     })
@@ -679,10 +765,14 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`  运行时          : ${RUNTIME_COMMAND} ${RUNTIME_ARGS.join(' ')}`)
   console.log(`  会话模式        : ${SESSION_MODE}`)
   console.log(`  工具过程展示    : ${SHOW_TOOLS ? '开（每次工具调用都会显示在回复中）' : '关'}`)
+  console.log(`  推理透传        : ${SHOW_REASONING ? '开（reasoning_content）' : '关（DSH_BRIDGE_SHOW_REASONING=1 开启）'}`)
+  console.log(`  会话存档保留    : 最新 ${MAX_SESSIONS} 个（目录=${SESSION_DIR}）`)
   console.log('')
   console.log('  Chatbox 配置：设置 → 模型提供方 → 添加自定义 OpenAI 兼容')
   console.log(`  API 地址：http://127.0.0.1:${PORT}/v1   API 密钥：任意非空值`)
   console.log('==============================================================')
+  pruneSessions() // 启动时清理一次
+  setInterval(pruneSessions, 3600 * 1000).unref() // 之后每小时清理一次
 })
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
