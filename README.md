@@ -96,6 +96,10 @@ chmod +x install.sh
 | `install.ps1` / `install.sh` | 一键安装脚本（Windows / macOS·Linux） |
 | `uninstall.ps1` / `uninstall.sh` | 卸载部署文件（`--remove-repo` 可连仓库一起删） |
 | `.env.example` | 环境变量模板（复制为 `.env` 使用） |
+| `guard.cs` / `guard.exe` | 危险命令拦截闸（Windows，见「安全防护」） |
+| `watchdog.cmd` | 看门狗：node 退出后 3 秒自动重启（防误杀/崩溃） |
+| `install-guard.ps1` | 编译并安装 guard.exe，写入 `.env` 的 `DSH_PWSH_GUARD` |
+| `install-service.ps1` / `uninstall-service.ps1` / `service-status.ps1` | 后台服务（计划任务）安装/卸载/状态检查 |
 | `docs/使用说明书-小白版.md` | 零代码经验用户手册 |
 | `package.json` | 独立目录部署（方式 B）时的依赖声明 |
 
@@ -177,6 +181,7 @@ Windows PowerShell 对应：`$env:DEEPSEEK_API_KEY = "sk-…"` 后再 `node serv
 | `DSH_RUNTIME_ARGS` | `cordis.yml` | 运行时参数，空格分隔 |
 | `DSH_SYSTEM_PROMPT` | 空 | Agent 系统提示词（persona）；留空用 dsh 默认 |
 | `DSH_CWD` | 当前目录 | Agent 的命令/文件工具工作根目录 |
+| `DSH_PWSH_GUARD` | 空 | guard.exe 绝对路径（由 install-guard.ps1 写入；未设置时自动回退正常探测） |
 
 配置来源优先级：**进程环境变量 > 同目录 `.env` 文件 > 默认值**。
 
@@ -184,6 +189,46 @@ Windows PowerShell 对应：`$env:DEEPSEEK_API_KEY = "sk-…"` 后再 `node serv
 > 若每次都据此重建运行时，会引发会话存档冲突（id collision）与空白回复。
 > 因此桥**默认忽略请求级 system 消息**（persona 用 `.env` 的 `DSH_SYSTEM_PROMPT`）。
 > 仅当你的客户端确实需要请求级 persona 时，才设置 `DSH_BRIDGE_USE_SYSTEM_PROMPT=1`。
+
+## 🔒 安全防护（强烈建议开启）
+
+管家的 pwsh 工具以**当前用户权限**执行命令，理论上可以杀掉桥进程、关系统、删文件。
+本仓库提供两层防护，**建议都装**：
+
+### 第一层：危险命令拦截闸 `guard.exe`（Windows）
+
+管家每条 pwsh 命令都会先经过 guard 检查，命中危险特征即拒绝（如 `taskkill`、
+`Stop-Process`、`shutdown`、`Restart-Computer`、`reg delete`、删除系统路径等），
+其余命令原样转发给真实 PowerShell。
+
+```powershell
+# 安装（编译 guard.exe 并写入 .env 的 DSH_PWSH_GUARD；一键安装脚本已尽力自动完成）
+.\install-guard.ps1
+# 然后重启桥：关旧窗口 → 双击 start-dsh-chatbox.bat（或重启服务）
+```
+
+> 原理：`cordis-windows.yml` 中 pwsh 执行器的 `pwshPath` 指向 `guard.exe`；
+> guard 用 Windows 自带的 .NET Framework 编译器（csc.exe）编译，无需任何额外依赖。
+> 被拦截时管家会看到 `[安全拦截] 该命令被 dsh-openai-bridge 安全策略禁止…` 并退出码 1。
+
+### 第二层：看门狗 + 后台服务（防误杀/防手滑关窗口/开机自启）
+
+```powershell
+# 安装为后台服务（登录后自动运行；node 被误杀后 3 秒自动重启；日志写 bridge.log）
+.\install-service.ps1
+# 查看状态 / 卸载
+.\service-status.ps1
+.\uninstall-service.ps1
+```
+
+> ⚠️ 服务模式与窗口模式（`start-dsh-chatbox.bat`）二选一，不要同时开（端口冲突）。
+> 安装服务前先关掉手动开的桥窗口。
+
+### 使用规则（与防护同等重要）
+
+1. 不要把系统级任务交给管家：杀进程、关机重启、改注册表、删系统文件
+2. 重要数据操作前，先让管家「只读」确认（如先列出清单再动手）
+3. 管家与普通 LLM 一样可能“脑补”细节——关键结论要求展示工具原始输出
 
 ## 🛠 常用操作
 

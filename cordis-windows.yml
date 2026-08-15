@@ -31,6 +31,10 @@
   config:
     cwd: !!js process.env.DSH_CWD ?? process.cwd()
     timeoutMs: 60000
+    # 安全闸：指向 guard.exe（由 install-guard.ps1 编译并写入 .env 的 DSH_PWSH_GUARD）。
+    # guard 会拦截 taskkill/Stop-Process/关机/删系统路径等危险命令后转发给真实 PowerShell；
+    # 未安装 guard 时该值为 undefined，自动回退到正常探测。
+    pwshPath: !!js process.env.DSH_PWSH_GUARD
 
 # shell-env：向每次 pwsh 调用注入受信任的 DSH_* 环境（tool-pwsh 依赖）
 - id: shell-env
