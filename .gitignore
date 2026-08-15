@@ -1,0 +1,26 @@
+# Node
+node_modules/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# 本地配置（含 API 密钥，切勿提交！）
+.env
+.env.local
+
+# dsh 运行时产生的会话存档
+.sessions/
+
+# 部署时在仓库根目录生成的备份
+*.bak
+
+# 构建产物
+lib/
+dist/
+build/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
