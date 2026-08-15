@@ -37,6 +37,7 @@
     `install-guard.ps1`）
   - README 新增「安全防护」章节；`cordis-windows.yml` 支持 `DSH_PWSH_GUARD`
     （未设置时自动回退正常探测）
+
 ## [1.0.0] - 2026-08-15
 
 首个开源版本。项目源于一次"在 Chatbox 中使用 DeepSeek Harness"的实战调试，

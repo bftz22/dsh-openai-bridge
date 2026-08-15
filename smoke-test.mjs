@@ -13,6 +13,7 @@
  * 用法：
  *   node smoke-test.mjs              # 默认 127.0.0.1:8787
  *   node smoke-test.mjs --port 9000  # 指定端口
+ *   node smoke-test.mjs --model xxx  # 指定模型（默认读 DSH_BRIDGE_MODEL 环境变量）
  *   node smoke-test.mjs --timeout 180000   # 每个请求超时（毫秒，默认 120s）
  *
  * 退出码：0 = 全部通过；1 = 有失败
@@ -24,14 +25,16 @@ import crypto from 'node:crypto'
 
 /* ------------------------- 参数解析 ------------------------- */
 let port = Number(process.env.DSH_BRIDGE_PORT ?? 8787)
+let model = process.env.DSH_BRIDGE_MODEL ?? 'deepseek-v4-flash'
 let timeoutMs = 120_000
 
 const args = process.argv.slice(2)
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--port') port = Number(args[i + 1] ?? 8787)
+  else if (args[i] === '--model') model = args[i + 1] ?? model
   else if (args[i] === '--timeout') timeoutMs = Number(args[i + 1] ?? 120_000)
   else if (args[i] === '--help' || args[i] === '-h') {
-    console.log('用法: node smoke-test.mjs [--port 8787] [--timeout 120000]')
+    console.log(`用法: node smoke-test.mjs [--port 8787] [--model ${model}] [--timeout 120000]`)
     process.exit(0)
   }
 }
@@ -86,7 +89,7 @@ async function chat(prompt, { stream = false, session = SESSION, timeout = timeo
   const res = await request('/v1/chat/completions', {
     method: 'POST',
     body: {
-      model: 'deepseek-v4-flash',
+      model,
       stream,
       messages: [{ role: 'user', content: prompt }],
     },
