@@ -204,9 +204,9 @@ Pop-Location
 # ---------------------------------------------------------------- 5. 部署桥接文件
 Write-Step "5/7 部署桥接文件到仓库根目录"
 # Windows：使用 PowerShell 执行器版配置（bash 执行器不支持 Windows）
-foreach ($f in @('server.mjs', 'cordis-windows.yml')) {
+foreach ($f in @('server.mjs', 'cordis-windows.yml', 'guard.cs', 'watchdog.cmd', 'install-guard.ps1', 'install-service.ps1', 'uninstall-service.ps1', 'service-status.ps1')) {
   $src = Join-Path $ScriptDir $f
-  if (-not (Test-Path $src)) { Write-Fail "缺少 $f（应与本脚本同目录）"; exit 1 }
+  if (-not (Test-Path $src)) { Write-Warn2 "缺少 $f（跳过）" }
 }
 $dstServer = Join-Path $RepoDir "server.mjs"
 $dstConfig = Join-Path $RepoDir "cordis.yml"
@@ -215,6 +215,13 @@ Copy-Item (Join-Path $ScriptDir "server.mjs") $dstServer -Force
 if (Test-Path $dstConfig) { Copy-Item $dstConfig "$dstConfig.bak" -Force }
 Copy-Item (Join-Path $ScriptDir "cordis-windows.yml") $dstConfig -Force
 Write-Info "server.mjs / cordis.yml（Windows PowerShell 版）✓"
+
+# 附带部署安全组件（看门狗、安全闸源码、服务脚本）
+foreach ($f in @('guard.cs', 'watchdog.cmd', 'install-guard.ps1', 'install-service.ps1', 'uninstall-service.ps1', 'service-status.ps1')) {
+  $src = Join-Path $ScriptDir $f
+  if (Test-Path $src) { Copy-Item $src (Join-Path $RepoDir $f) -Force }
+}
+Write-Info "安全组件（guard.cs / watchdog.cmd / 服务脚本）✓"
 
 # ---------------------------------------------------------------- 6. .env + 启动脚本
 Write-Step "6/7 生成 .env 与启动脚本"
@@ -233,6 +240,30 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $batContent = "@echo off`r`nrem dsh-openai-bridge 启动脚本（由 install.ps1 生成）`r`ncd /d `"%~dp0`"`r`nnode server.mjs`r`n"
 [System.IO.File]::WriteAllText((Join-Path $RepoDir "start-dsh-chatbox.bat"), $batContent, $utf8NoBom)
 Write-Info ".env / start-dsh-chatbox.bat ✓"
+
+# 尽力编译安全闸 guard.exe（失败不影响安装，可稍后运行 install-guard.ps1）
+$csc = @(
+  "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe",
+  "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe"
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($csc) {
+  $guardSrc = Join-Path $RepoDir "guard.cs"
+  $guardExe = Join-Path $RepoDir "guard.exe"
+  & $csc /nologo /target:exe /out:$guardExe $guardSrc 2>$null
+  if (Test-Path $guardExe) {
+    Write-Info "安全闸 guard.exe 编译成功 ✓"
+    $envFile = Join-Path $RepoDir ".env"
+    $envContent = @()
+    if (Test-Path $envFile) { $envContent = @(Get-Content $envFile) }
+    $envContent = @($envContent | Where-Object { $_ -notmatch '^DSH_PWSH_GUARD=' })
+    $envContent += "DSH_PWSH_GUARD=$guardExe"
+    [System.IO.File]::WriteAllLines($envFile, [string[]]$envContent, $utf8NoBom)
+  } else {
+    Write-Warn2 "guard.exe 编译失败（可稍后运行 install-guard.ps1 重试）"
+  }
+} else {
+  Write-Warn2 "未找到 csc.exe，跳过安全闸（可稍后运行 install-guard.ps1）"
+}
 
 # ---------------------------------------------------------------- 7. 完成 / 启动
 Write-Step "7/7 完成"

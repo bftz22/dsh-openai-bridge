@@ -3,6 +3,23 @@
 本项目的变更记录。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [1.0.1] - 2026-08-15
+
+### 新增
+
+- **安全防护（强烈建议开启）**：
+  - `guard.cs` / `install-guard.ps1`：危险命令拦截闸。用 Windows 自带 csc.exe 编译为
+    `guard.exe`，管家的每条 pwsh 命令先过闸：`taskkill`、`Stop-Process`、`shutdown`、
+    `Restart-Computer`、`reg delete`、删除系统路径等危险命令直接拒绝（`[安全拦截]` 提示），
+    其余原样转发给真实 PowerShell（pwsh 7 → PATH → 系统自带 5.1 兑底）
+  - `watchdog.cmd` + `install-service.ps1`：桥改为开机自启后台服务（计划任务），
+    node 被误杀/崩溃后 3 秒自动重启，日志写 `bridge.log`；配套 `service-status.ps1` /
+    `uninstall-service.ps1`
+  - `install.ps1` 自动部署安全组件并尽力编译 guard.exe（失败不影响安装，可稍后重跑
+    `install-guard.ps1`）
+  - README 新增「安全防护」章节；`cordis-windows.yml` 支持 `DSH_PWSH_GUARD`
+    （未设置时自动回退正常探测）
+
 ## [1.0.0] - 2026-08-15
 
 首个开源版本。项目源于一次"在 Chatbox 中使用 DeepSeek Harness"的实战调试，
