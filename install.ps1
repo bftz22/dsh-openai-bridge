@@ -11,7 +11,8 @@
     4. 安装依赖并构建（pnpm run build:lib）
     5. 部署桥接文件（server.mjs / cordis.yml）到仓库根目录
     6. 生成 .env 配置与启动脚本
-    7. 启动桥接服务（可用 -NoStart 跳过）
+    7. 注册开机自启（启动文件夹，可用 -NoAutostart 跳过）
+    8. 启动桥接服务（可用 -NoStart 跳过）
 
 .PARAMETER ApiKey
   DeepSeek API Key（platform.deepseek.com 创建）。缺省时交互式询问。
@@ -37,6 +38,9 @@
 .PARAMETER FullBuild
   执行完整构建 pnpm run build（默认只构建 lib，更快）。
 
+.PARAMETER NoAutostart
+  不注册开机自启（默认注册到当前用户「启动」文件夹）。
+
 .EXAMPLE
   .\install.ps1 -ApiKey "sk-xxxx"
   .\install.ps1 -ApiKey "sk-xxxx" -SystemPrompt "你是资深编程助手" -Workspace "D:\code\myproj"
@@ -50,7 +54,8 @@ param(
   [string]$RepoDir = (Join-Path $HOME "deepseek-harness"),
   [switch]$NoStart,
   [switch]$SkipBuild,
-  [switch]$FullBuild
+  [switch]$FullBuild,
+  [switch]$NoAutostart
 )
 
 $ErrorActionPreference = 'Stop'
@@ -233,6 +238,18 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $batContent = "@echo off`r`nrem dsh-openai-bridge 启动脚本（由 install.ps1 生成）`r`ncd /d `"%~dp0`"`r`nnode server.mjs`r`n"
 [System.IO.File]::WriteAllText((Join-Path $RepoDir "start-dsh-chatbox.bat"), $batContent, $utf8NoBom)
 Write-Info ".env / start-dsh-chatbox.bat ✓"
+
+# 开机自启：注册到当前用户「启动」文件夹（登录时若端口未监听则自动启动桥）
+if (-not $NoAutostart) {
+  $startupDir = [Environment]::GetFolderPath('Startup')
+  if (-not $startupDir) { $startupDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup" }
+  $autoBat = "@echo off`r`nrem dsh-openai-bridge autostart (Startup folder)`r`ncd /d `"$RepoDir`"`r`nnetstat -ano | findstr `":$Port`" | findstr `"LISTENING`" >nul`r`nif not errorlevel 1 (`r`n  exit /b 0`r`n)`r`nnode server.mjs`r`n"
+  $startupBat = Join-Path $startupDir "dsh-openai-bridge.bat"
+  [System.IO.File]::WriteAllText($startupBat, $autoBat, $utf8NoBom)
+  Write-Info "开机自启已注册：$startupBat"
+} else {
+  Write-Info "已跳过开机自启注册（-NoAutostart）"
+}
 
 # ---------------------------------------------------------------- 7. 完成 / 启动
 Write-Step "7/7 完成"

@@ -3,6 +3,24 @@
 本项目的变更记录。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [1.1.0] - 2026-08-15
+
+### 新增
+
+- **推理过程透传**：`DSH_BRIDGE_SHOW_REASONING=1` 时，dsh 的 `reasoning-delta`
+  事件转为 OpenAI SSE 的 `delta.reasoning_content`（DeepSeek 官方 API 同款非标准
+  字段），非流式响应同时附加 `message.reasoning_content`；默认关闭
+- **会话存档治理**：`.sessions/` 目录只保留最新 `DSH_BRIDGE_MAX_SESSIONS`
+  （默认 20）个会话存档（按修改时间），启动时、`/clear`/`/new` 时、每小时自动
+  清理超出部分；目录可用 `DSH_BRIDGE_SESSION_DIR` 指定
+- **开机自启**：新增 `autostart-bridge.bat`（登录时若 8787 未监听则自动启动桥），
+  `install.ps1` 安装时自动注册到「启动」文件夹
+- **Mac 版说明书**：`docs/使用说明书-Mac版.md`（macOS/Linux 小白手册）
+
+### 改进
+
+- 事件级调试日志全部归入 `DSH_BRIDGE_DEBUG=1`（默认静默），避免日志刷屏
+
 ## [1.0.0] - 2026-08-15
 
 首个开源版本。项目源于一次"在 Chatbox 中使用 DeepSeek Harness"的实战调试，

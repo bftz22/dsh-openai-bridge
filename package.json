@@ -1,6 +1,6 @@
 {
   "name": "dsh-openai-bridge",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "OpenAI-compatible bridge that lets Chatbox (or any OpenAI-compatible client) drive a DeepSeek Harness (dsh) agent — with streaming, session persistence, tool-call traces and one-click installers for Windows/macOS/Linux.",
   "type": "module",
   "main": "server.mjs",
