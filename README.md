@@ -284,6 +284,16 @@ node smoke-test.mjs --model deepseek-v4-flash   # 指定模型（默认读 DSH_B
 全部通过退出码为 0，任一失败退出码为 1。脚本使用独立会话（`smoke-*`），
 结束后自动 `/clear`，不会干扰正在使用的 Chatbox 会话。
 
+## 📸 实拍效果（截图待补充）
+
+> 以下为**占位图**：请在 Chatbox 中实际使用后，把截图保存到 `docs/screenshots/`
+> 目录（文件名见下方），替换后即可在 README 中展示。建议两张：
+> ① Chatbox 对话界面（含流式回复）；② 工具调用轨迹（🔧📥✅ 过程展示）。
+
+![Chatbox 对话界面（占位：docs/screenshots/chatbox-main.png）](docs/screenshots/chatbox-main.png)
+
+![工具调用轨迹（占位：docs/screenshots/tool-traces.png）](docs/screenshots/tool-traces.png)
+
 ## 🤝 开源与贡献
 
 - 本项目基于 **MIT License** 开源；`cordis*.yml` 改编自 DeepSeek Harness 官方示例
@@ -297,7 +307,7 @@ node smoke-test.mjs --model deepseek-v4-flash   # 指定模型（默认读 DSH_B
 - dsh 官方 SDK 暂不支持外部工具调度/审批流，因此 Chatbox「工作模式」的原生工具调用界面
   无法对接；本桥以「工具过程展示」替代（等 dsh 开放审批流后即可原生支持）
 - dsh 处于开发者预览期（v0.1.0-rc），接口可能变化
-- 计划中：README 实际截图（Chatbox 界面 + 工具轨迹）、reasoning 内容在 Chatbox 的
+- 计划中：README 实拍截图（占位已就绪，待用户补图）、reasoning 内容在 Chatbox 的
   原生展示（当前仅透传数据）、macOS 开机自启一键注册（launchd）
 
 ## 📜 License
