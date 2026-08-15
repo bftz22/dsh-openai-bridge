@@ -106,7 +106,9 @@ chmod +x install.sh
 | `install-guard.ps1` | 编译并安装 guard.exe，写入 `.env` 的 `DSH_PWSH_GUARD` |
 | `install-service.ps1` / `uninstall-service.ps1` / `service-status.ps1` | 后台服务（计划任务）安装/卸载/状态检查 |
 | `docs/使用说明书-小白版.md` | 零代码经验用户手册（Windows） |
-| `docs/使用说明书-Mac版.md` | 零代码经验用户手册（macOS/Linux） || `package.json` | 独立目录部署（方式 B）时的依赖声明 |
+| `docs/使用说明书-Mac版.md` | 零代码经验用户手册（macOS/Linux） |
+| `smoke-test.mjs` | 自检脚本：一键验证 healthz / 模型列表 / 流式补全 / 工具调用 / 多轮上下文（见「自检」） |
+| `package.json` | 独立目录部署（方式 B）时的依赖声明 |
 
 ## 🔧 手动安装（可选，不依赖一键脚本）
 
@@ -267,12 +269,27 @@ Windows PowerShell 对应：`$env:DEEPSEEK_API_KEY = "sk-…"` 后再 `node serv
 排查通用姿势：`.env` 里设 `DSH_BRIDGE_DEBUG=1` → 重启桥 → 复现问题 → 把桥窗口
 `[bridge]` 开头的日志连同报错一起贴进 issue。
 
+## 🔍 自检（smoke-test.mjs）
+
+一键验证桥服务全链路是否正常，适合安装后、升级后或排障时运行：
+
+```bash
+node smoke-test.mjs                    # 默认 http://127.0.0.1:8787
+node smoke-test.mjs --port 9000        # 指定端口
+node smoke-test.mjs --model deepseek-v4-flash   # 指定模型（默认读 DSH_BRIDGE_MODEL）
+```
+
+检查项：`/healthz`、`/v1/models`、非流式补全、流式补全（SSE + `[DONE]`）、
+工具调用（真实执行 PowerShell 并回传输出）、多轮上下文（会话记忆）。
+全部通过退出码为 0，任一失败退出码为 1。脚本使用独立会话（`smoke-*`），
+结束后自动 `/clear`，不会干扰正在使用的 Chatbox 会话。
+
 ## 🤝 开源与贡献
 
 - 本项目基于 **MIT License** 开源；`cordis*.yml` 改编自 DeepSeek Harness 官方示例
   （MIT，署名保留在文件头与 LICENSE 中）。
 - 上游：DeepSeek Harness（dsh）https://github.com/deepseek-ai/deepseek-harness
-- 欢迎提交 issue / PR：功能请求（如开机自启、思考过程预览、smoke-test 自检脚本）、
+- 欢迎提交 issue / PR：功能请求（如思考过程在 Chatbox 的原生展示）、
   Bug 报告（请附 `DSH_BRIDGE_DEBUG=1` 日志）、文档改进。
 
 ### 已知限制 / Roadmap
