@@ -9,7 +9,7 @@
 安装后需要重启桥（或服务）生效。
 #>
 param(
-  [string]$RepoDir = "C:\Users\<USER>\deepseek-harness"
+  [string] = (Join-Path $HOME 'deepseek-harness')
 )
 
 $ErrorActionPreference = 'Stop'

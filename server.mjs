@@ -108,10 +108,11 @@ const CONTEXT_LIMIT = Number(process.env.DSH_BRIDGE_CONTEXT_LIMIT ?? 1_048_576)
 // 下一轮请求前自动重置会话，避免历史累积到超限（dsh 自带压缩常因 token
 // 统计口径不一致而拦不住，故在桥接层做兜底）。0~1 之间。
 const CONTEXT_RESET_RATIO = Number(process.env.DSH_BRIDGE_CONTEXT_RESET_RATIO ?? 0.72)
-// 图片静态服务：把 ComfyUI 输出目录挂到 http://127.0.0.1:PORT/output/<文件名>，
+// 图片静态服务：把图片输出目录挂到 http://127.0.0.1:PORT/output/<文件名>，
 // 让 agent 在回复里用 markdown 图片链接展示生成结果（Chatbox 可直接渲染），
 // 避免把图片 base64 塞进对话上下文导致超限。
-const IMAGE_OUTPUT_DIR = process.env.DSH_BRIDGE_OUTPUT_DIR ?? 'F:\\ComfyUI-aki-v3.2\\ComfyUI\\output'
+// 默认相对当前工作目录的 output/（即运行时仓库根/output），可用环境变量覆盖。
+const IMAGE_OUTPUT_DIR = process.env.DSH_BRIDGE_OUTPUT_DIR ?? 'output'
 
 if (!process.env.DEEPSEEK_API_KEY) {
   console.warn('[dsh-openai-bridge] 警告：未设置 DEEPSEEK_API_KEY，运行时将无法调用模型。')
