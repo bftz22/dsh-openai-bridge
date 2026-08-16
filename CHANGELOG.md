@@ -85,6 +85,29 @@
 - bash 执行器仅支持 POSIX；Windows 上使用 PowerShell 执行器（官方对应实现）
 - dsh 处于开发者预览期（v0.1.0-rc），接口可能变化，遇到问题请更新 dsh 后重试
 
-## v1.1.1 (2026-08-16)
+## [1.1.2] - 2026-08-16
+
+### 修复
+
+- **Node 24 启动崩溃（`ERR_AMBIGUOUS_MODULE_SYNTAX`）**：server.mjs 中 `__dirname`
+  与顶层 await 混用导致 Node 24 拒绝启动（曾引发重启风暴）；改用 ESM 标准写法
+  `import.meta.dirname`
+- **批处理编码问题**：`watchdog.cmd` / `start-watchdog*.bat/vbs` 的 UTF-8 中文注释
+  在 cmd 的 ANSI(GBK) 解析下会吞掉换行、破坏语法；注释已全部 ASCII 化
+- **install.ps1 生成模板**：`start-dsh-chatbox.bat` 模板注释改为 ASCII，避免复发
+
+### 新增
+
+- `github-sync-loop.vbs`：GitHub 自动同步循环（每 15 分钟静默 fetch/pull/push）
+- `THIRD_PARTY_NOTICES.md`：第三方声明独立成文（LICENSE 保持纯 MIT 便于 GitHub 识别）
+
+## [1.1.1] - 2026-08-16
+
+### 更新
+
 - sync: 更新 server.mjs（本机实际运行版）、watchdog.cmd（加固版）、cordis.yml（guard 接线）
-- feat: 新增 launch-dsh.cmd/vbs（一键启动器）、restart-bridge.cmd、status-bridge.cmd、start-watchdog*.bat/vbs、预编译 guard.exe
+
+### 新增
+
+- `launch-dsh.cmd/vbs`（一键启动器）、`restart-bridge.cmd`、`status-bridge.cmd`、
+  `start-watchdog*.bat/vbs`、预编译 `guard.exe`
