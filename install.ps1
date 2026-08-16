@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
   dsh-openai-bridge 一键安装脚本（Windows / PowerShell）
@@ -150,9 +150,22 @@ Write-Info "pnpm 就绪（方式：$($pnpmExec -join ' ')）"
 Write-Step "3/7 准备 deepseek-harness 仓库（$RepoDir）"
 if (-not (Test-Path $RepoDir)) {
   Write-Info "克隆仓库 …"
-  git clone --depth 1 https://github.com/deepseek-ai/deepseek-harness.git $RepoDir
-  if ($LASTEXITCODE -ne 0) {
-    Write-Fail "git clone 失败。请确认已安装 git（winget install Git.Git）且网络可用。"
+  # 直连 GitHub 优先；国内网络失败时自动降级到 ghproxy 镜像（2026-08-17 实测可达）
+  $cloneUrls = @(
+    "https://github.com/deepseek-ai/deepseek-harness.git",
+    "https://ghproxy.net/https://github.com/deepseek-ai/deepseek-harness.git",
+    "https://gh-proxy.com/https://github.com/deepseek-ai/deepseek-harness.git"
+  )
+  $cloned = $false
+  foreach ($cu in $cloneUrls) {
+    Write-Info "  尝试源: $cu"
+    git clone --depth 1 $cu $RepoDir 2>$null
+    if ($LASTEXITCODE -eq 0) { $cloned = $true; break }
+    if (Test-Path $RepoDir) { Remove-Item $RepoDir -Recurse -Force -ErrorAction SilentlyContinue }
+    Write-Warn2 "  该源失败，尝试下一个 …"
+  }
+  if (-not $cloned) {
+    Write-Fail "git clone 全部失败（直连 + 镜像）。请确认已安装 git（winget install Git.Git）、网络可用，或开启代理后重试。"
     exit 1
   }
 } else {

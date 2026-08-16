@@ -92,8 +92,20 @@ info "pnpm ✓（$(command -v pnpm)）"
 step "3/7 准备 deepseek-harness 仓库（$REPO_DIR）"
 if [[ ! -d "$REPO_DIR" ]]; then
   info "克隆仓库 …"
-  git clone --depth 1 https://github.com/deepseek-ai/deepseek-harness.git "$REPO_DIR" \
-    || fail "git clone 失败。请确认已安装 git 且网络可用。"
+  # 直连 GitHub 优先；国内网络失败时自动降级到 ghproxy 镜像（2026-08-17 实测可达）
+  CLONE_URLS=(
+    "https://github.com/deepseek-ai/deepseek-harness.git"
+    "https://ghproxy.net/https://github.com/deepseek-ai/deepseek-harness.git"
+    "https://gh-proxy.com/https://github.com/deepseek-ai/deepseek-harness.git"
+  )
+  CLONED=0
+  for cu in "${CLONE_URLS[@]}"; do
+    info "  尝试源: $cu"
+    if git clone --depth 1 "$cu" "$REPO_DIR" >/dev/null 2>&1; then CLONED=1; break; fi
+    rm -rf "$REPO_DIR"
+    warn "  该源失败，尝试下一个 …"
+  done
+  [[ "$CLONED" -eq 1 ]] || fail "git clone 全部失败（直连 + 镜像）。请确认已安装 git、网络可用，或开启代理后重试。"
 else
   info "仓库已存在，尝试拉取更新 …"
   (cd "$REPO_DIR" && git pull --ff-only >/dev/null 2>&1) || warn "拉取更新失败（忽略，继续使用现有代码）"
