@@ -722,7 +722,7 @@ async function runNonStreaming(harness, sessionId, prompt, model, res, thread) {
     throw e
   }
 
-  const trace = traceLines.length ? `${traceLines.join('\n\n')}\n\n` : ''
+  const trace = traceLines.length ? `${traceLines.join(TRACE_SEP)}\n\n` : ''
   const content = `${trace}${result.finalResponse ?? ''}`
   console.log(`[bridge] 回合结束 流式=false 最终文本=${content.length}字 工具记录=${traceLines.length}条 推理=${reasoningParts.length ? reasoningParts.join('').length + '字' : '未收集'} 输入tokens=${thread.lastInputTokens}`)
   const payload = completionJson(model, content, result)
@@ -734,10 +734,15 @@ async function runNonStreaming(harness, sessionId, prompt, model, res, thread) {
 
 /* ------------------------------------------------------------------ */
 /* 工具过程展示：把管家调用工具的过程实时显示在回复里                    */
-/* （默认开启；环境变量 DSH_BRIDGE_SHOW_TOOLS=0 可关闭）                */
+/* 模式（环境变量 DSH_BRIDGE_SHOW_TOOLS）：                              */
+/*   0   关闭                                                           */
+/*   1   紧凑（默认）：每个工具调用只回显单行（🔧/✅/❌），美观不刷屏    */
+/*   2   完整：调用参数 + 结果摘要（旧版行为，调试用）                    */
 /* ------------------------------------------------------------------ */
 
 const SHOW_TOOLS = process.env.DSH_BRIDGE_SHOW_TOOLS !== '0'
+const TOOLS_FULL = process.env.DSH_BRIDGE_SHOW_TOOLS === '2'
+const TRACE_SEP = TOOLS_FULL ? '\n\n' : '\n'
 
 function truncate(s, n) {
   if (!s) return ''
@@ -761,16 +766,25 @@ function toolResultText(message) {
 /** tool/call 事件 → 展示文本。 */
 function toolCallLine(data) {
   const name = data?.name ?? '?'
+  if (!TOOLS_FULL) return `🔧 正在调用：${name}`
   const args = data?.arguments ? `\n📥 参数：${truncate(data.arguments, 200)}` : ''
   return `🔧 正在调用工具：${name}${args}`
 }
 
 /** tool/result 事件 → 展示文本。 */
 function toolResultLine(data) {
+  const name = data?.name ?? '工具'
   const isError = !!(data?.error || data?.message?.content?.[0]?.isError)
+  const why = data?.error ? `（${data.error.name ?? ''} ${data.error.code ?? ''}）`.replace(/\s+/g, ' ').trim() : ''
+  if (!TOOLS_FULL) {
+    if (isError) {
+      const errText = truncate(toolResultText(data?.message), 80)
+      return `❌ ${name} 失败${why}${errText ? `：${errText.replace(/\s+/g, ' ')}` : ''}`
+    }
+    return `✅ ${name} 完成`
+  }
   const summary = truncate(toolResultText(data?.message), 300)
   if (isError) {
-    const why = data?.error ? `（${data.error.name ?? ''} ${data.error.code ?? ''}）`.replace(/\s+/g, ' ').trim() : ''
     return `❌ 工具执行失败${why}${summary ? `\n${summary}` : ''}`
   }
   return `✅ 工具执行完成${summary ? `\n${summary}` : ''}`
@@ -1010,7 +1024,7 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`  模型            : ${DEFAULT_MODEL}`)
   console.log(`  运行时          : ${RUNTIME_COMMAND} ${RUNTIME_ARGS.join(' ')}`)
   console.log(`  会话模式        : ${SESSION_MODE}`)
-  console.log(`  工具过程展示    : ${SHOW_TOOLS ? '开（每次工具调用都会显示在回复中）' : '关'}`)
+  console.log(`  工具过程展示    : ${!SHOW_TOOLS ? '关' : TOOLS_FULL ? '完整（参数+结果，调试用）' : '紧凑（单行回显，默认）'}`)
   console.log(`  推理透传        : ${SHOW_REASONING ? '开（reasoning_content）' : '关（DSH_BRIDGE_SHOW_REASONING=1 开启）'}`)
   console.log(`  会话存档保留    : 最新 ${MAX_SESSIONS} 个（目录=${SESSION_DIR}）`)
   console.log(`  上下文保护      : 上限 ${CONTEXT_LIMIT.toLocaleString()} tokens，超 ${Math.round(CONTEXT_RESET_RATIO * 100)}% 自动重置会话；超限请求自动重置并重试`)

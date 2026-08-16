@@ -31,7 +31,8 @@ bash（macOS/Linux）/ PowerShell（Windows）/ 文件系统 / 子代理 / todo 
 - **流式输出**：SSE 打字机效果，工具进度实时可见
 - **会话管理**：长驻会话（persistent）/ 一次性会话（per-request）、`X-DSH-Session` 多会话隔离、
   `/clear`、`/new`、`/help` 内置命令
-- **工具过程展示**：Agent 每步调用（工具名 + 参数 + 结果/错误）都实时出现在回复里
+- **工具过程展示**：Agent 每步调用实时回显 🔧/✅/❌，三档可调（默认**紧凑单行**不刷屏；
+  `DSH_BRIDGE_SHOW_TOOLS=2` 显示完整参数与结果，`=0` 完全关闭）
 - **推理过程透传**（可选）：`DSH_BRIDGE_SHOW_REASONING=1` 时输出
   `delta.reasoning_content`（DeepSeek 官方 API 同款非标准字段）
 - **会话存档治理**：`.sessions/` 自动只保留最新 N 个（默认 20），不再无界增长
@@ -186,7 +187,7 @@ Windows PowerShell 对应：`$env:DEEPSEEK_API_KEY = "sk-…"` 后再 `node serv
 | `DSH_BRIDGE_PROVIDER` | `deepseek-official` | 模型路由 provider |
 | `DSH_BRIDGE_MAX_TOKENS` | 无 | 每个会话的输出 token 上限 |
 | `DSH_BRIDGE_SESSION_MODE` | `persistent` | `persistent`=跨请求保留上下文；`per-request`=每次新会话 |
-| `DSH_BRIDGE_SHOW_TOOLS` | `1` | 工具过程展示开关（🔧 进度实时回显）；`0` 关闭 |
+| `DSH_BRIDGE_SHOW_TOOLS` | `1` | 工具过程展示：`0`=关闭；`1`=紧凑（默认，每个工具调用只回显单行 🔧/✅/❌）；`2`=完整（含参数与结果摘要，调试用） |
 | `DSH_BRIDGE_SHOW_REASONING` | `0` | `1` 时透传推理过程（SSE `delta.reasoning_content`，非标准字段） |
 | `DSH_BRIDGE_DEBUG` | `0` | `1` 时输出每条会话事件等详细日志（排查问题用） |
 | `DSH_BRIDGE_USE_SYSTEM_PROMPT` | `0` | `1` 时采纳请求携带的 system 消息作为 persona（见下方说明） |
