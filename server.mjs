@@ -689,6 +689,7 @@ async function handleChatCompletion(req, res) {
 async function runNonStreaming(harness, sessionId, prompt, model, res, thread) {
   const traceLines = []
   const reasoningParts = []
+  const toolStats = newToolStats()
   const result = await harness.run(prompt, {
     sessionId,
     onNotification: (n) => {
@@ -696,9 +697,13 @@ async function runNonStreaming(harness, sessionId, prompt, model, res, thread) {
       const ev = n.params.event
       if (!ev || typeof ev.type !== 'string') return
       const data = ev.data ?? {}
-      if (SHOW_TOOLS && ev.type === 'tool/call') traceLines.push(toolCallLine(data))
-      else if (SHOW_TOOLS && ev.type === 'tool/result') traceLines.push(toolResultLine(data))
-      else if (ev.type === 'assistant/message' && data.usage) {
+      if (SHOW_TOOLS && ev.type === 'tool/call') {
+        noteToolCall(toolStats, data)
+        if (!TOOLS_SUMMARY) traceLines.push(toolCallLine(data))
+      } else if (SHOW_TOOLS && ev.type === 'tool/result') {
+        noteToolResult(toolStats, data)
+        if (!TOOLS_SUMMARY) traceLines.push(toolResultLine(data))
+      } else if (ev.type === 'assistant/message' && data.usage) {
         thread.lastInputTokens = Number(data.usage.inputTokens ?? data.usage.promptTokens ?? 0)
       }
       if (SHOW_REASONING && ev.type === 'assistant/message') {
@@ -723,7 +728,8 @@ async function runNonStreaming(harness, sessionId, prompt, model, res, thread) {
   }
 
   const trace = traceLines.length ? `${traceLines.join(TRACE_SEP)}\n\n` : ''
-  const content = `${trace}${result.finalResponse ?? ''}`
+  const summary = TOOLS_SUMMARY ? toolSummaryLine(toolStats) : ''
+  const content = `${trace}${result.finalResponse ?? ''}${summary ? `\n\n${summary}` : ''}`
   console.log(`[bridge] 回合结束 流式=false 最终文本=${content.length}字 工具记录=${traceLines.length}条 推理=${reasoningParts.length ? reasoningParts.join('').length + '字' : '未收集'} 输入tokens=${thread.lastInputTokens}`)
   const payload = completionJson(model, content, result)
   if (SHOW_REASONING && reasoningParts.length) {
@@ -733,21 +739,60 @@ async function runNonStreaming(harness, sessionId, prompt, model, res, thread) {
 }
 
 /* ------------------------------------------------------------------ */
-/* 工具过程展示：把管家调用工具的过程实时显示在回复里                    */
+/* 工具过程展示：把管家调用工具的过程显示在回复里（尽量贴近原生聊天观感）  */
 /* 模式（环境变量 DSH_BRIDGE_SHOW_TOOLS）：                              */
-/*   0   关闭                                                           */
-/*   1   紧凑（默认）：每个工具调用只回显单行（🔧/✅/❌），美观不刷屏    */
-/*   2   完整：调用参数 + 结果摘要（旧版行为，调试用）                    */
+/*   0   关闭：完全隐藏工具过程                                            */
+/*   1   摘要（默认）：过程不刷屏，回合结束追加一行统计（最接近原生）      */
+/*   2   紧凑：每个工具调用实时回显单行（🔧/✅/❌）                       */
+/*   3   完整：调用参数 + 结果摘要（旧版行为，调试用）                    */
 /* ------------------------------------------------------------------ */
 
-const SHOW_TOOLS = process.env.DSH_BRIDGE_SHOW_TOOLS !== '0'
-const TOOLS_FULL = process.env.DSH_BRIDGE_SHOW_TOOLS === '2'
+const TOOLS_MODE = process.env.DSH_BRIDGE_SHOW_TOOLS ?? '1'
+const SHOW_TOOLS = TOOLS_MODE !== '0'
+const TOOLS_SUMMARY = TOOLS_MODE === '1'
+const TOOLS_COMPACT = TOOLS_MODE === '2'
+const TOOLS_FULL = TOOLS_MODE === '3'
 const TRACE_SEP = TOOLS_FULL ? '\n\n' : '\n'
 
 function truncate(s, n) {
   if (!s) return ''
   s = String(s)
   return s.length > n ? `${s.slice(0, n)}…` : s
+}
+
+/** 工具统计器：摘要模式用（count / byName / failCount / firstFail）。 */
+function newToolStats() {
+  return { count: 0, byName: {}, failCount: 0, firstFail: '' }
+}
+
+function noteToolCall(stats, data) {
+  stats.count++
+  const name = data?.name ?? '?'
+  stats.byName[name] = (stats.byName[name] ?? 0) + 1
+}
+
+function noteToolResult(stats, data) {
+  const isError = !!(data?.error || data?.message?.content?.[0]?.isError)
+  if (!isError) return
+  stats.failCount++
+  if (!stats.firstFail) {
+    const name = data?.name ?? '工具'
+    const why = data?.error ? `（${data.error.name ?? ''} ${data.error.code ?? ''}）`.replace(/\s+/g, ' ').trim() : ''
+    const errText = truncate(toolResultText(data?.message), 60)
+    stats.firstFail = `${name}${why}${errText ? `：${errText.replace(/\s+/g, ' ')}` : ''}`
+  }
+}
+
+/** 摘要模式：回合结束时追加的一行工具统计（贴近原生观感）。 */
+function toolSummaryLine(stats) {
+  if (!stats.count) return ''
+  const names = Object.entries(stats.byName)
+    .map(([n, c]) => (c > 1 ? `${n}×${c}` : n))
+    .join('、')
+  if (stats.failCount) {
+    return `🔧 调用工具 ${stats.count} 次（${names}），失败 ${stats.failCount} 次${stats.firstFail ? `：${stats.firstFail}` : ''}`
+  }
+  return `🔧 调用工具 ${stats.count} 次：${names}`
 }
 
 /** 从 tool/result 事件的 message 中提取可读文本（ToolResultBlock → text blocks）。 */
@@ -763,7 +808,7 @@ function toolResultText(message) {
   return ''
 }
 
-/** tool/call 事件 → 展示文本。 */
+/** tool/call 事件 → 展示文本（紧凑/完整模式用）。 */
 function toolCallLine(data) {
   const name = data?.name ?? '?'
   if (!TOOLS_FULL) return `🔧 正在调用：${name}`
@@ -771,7 +816,7 @@ function toolCallLine(data) {
   return `🔧 正在调用工具：${name}${args}`
 }
 
-/** tool/result 事件 → 展示文本。 */
+/** tool/result 事件 → 展示文本（紧凑/完整模式用）。 */
 function toolResultLine(data) {
   const name = data?.name ?? '工具'
   const isError = !!(data?.error || data?.message?.content?.[0]?.isError)
@@ -871,6 +916,7 @@ async function runStreaming(harness, sessionId, prompt, model, res, thread) {
   let finishReason = 'stop'
   let overflow = false
   let overflowError = null
+  const toolStats = newToolStats()
 
   const finish = () => {
     if (ended) return
@@ -919,12 +965,18 @@ async function runStreaming(harness, sessionId, prompt, model, res, thread) {
           if (DEBUG) console.log(`[bridge]   用户侧消息来源=${data.source?.kind ?? '?'}`)
         } else if (SHOW_TOOLS && ev.type === 'tool/call') {
           if (DEBUG) console.log(`[bridge]   工具调用: ${data.name} 参数=${JSON.stringify(data.arguments?.slice(0, 80))}`)
-          const line = toolCallLine(data)
-          if (line) writeSseDelta(res, model, `\n\n${line}\n\n`)
+          noteToolCall(toolStats, data)
+          if (!TOOLS_SUMMARY) {
+            const line = toolCallLine(data)
+            if (line) writeSseDelta(res, model, `\n\n${line}\n\n`)
+          }
         } else if (SHOW_TOOLS && ev.type === 'tool/result') {
           if (DEBUG) console.log(`[bridge]   工具结果: ${data.error ? '错误' : '成功'} ${JSON.stringify(toolResultText(data.message).slice(0, 80))}`)
-          const line = toolResultLine(data)
-          if (line) writeSseDelta(res, model, `\n\n${line}\n\n`)
+          noteToolResult(toolStats, data)
+          if (!TOOLS_SUMMARY) {
+            const line = toolResultLine(data)
+            if (line) writeSseDelta(res, model, `\n\n${line}\n\n`)
+          }
         } else if (ev.type === 'assistant/message') {
           const blocks = Array.isArray(data.message?.content) ? data.message.content : []
           const text = blocks
@@ -974,7 +1026,16 @@ async function runStreaming(harness, sessionId, prompt, model, res, thread) {
   } finally {
     console.log(`[bridge] 回合结束 流式=${true} 最终文本=${finalText.length}字 结束原因=${finishReason} 输入tokens=${thread.lastInputTokens}${overflow ? '（上下文超限）' : ''}`)
     // 超限时保持流打开，等待上层重置会话后重试；其余情况正常收尾
-    if (!overflow) finish()
+    if (!overflow) {
+      // 摘要模式：最后追加一行工具统计（贴近原生观感）
+      if (TOOLS_SUMMARY) {
+        const summary = toolSummaryLine(toolStats)
+        if (summary) {
+          try { writeSseDelta(res, model, `\n\n${summary}`) } catch { /* 客户端已断开 */ }
+        }
+      }
+      finish()
+    }
   }
   return { overflow, error: overflowError }
 }
@@ -1024,7 +1085,7 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`  模型            : ${DEFAULT_MODEL}`)
   console.log(`  运行时          : ${RUNTIME_COMMAND} ${RUNTIME_ARGS.join(' ')}`)
   console.log(`  会话模式        : ${SESSION_MODE}`)
-  console.log(`  工具过程展示    : ${!SHOW_TOOLS ? '关' : TOOLS_FULL ? '完整（参数+结果，调试用）' : '紧凑（单行回显，默认）'}`)
+  console.log(`  工具过程展示    : ${!SHOW_TOOLS ? '关' : TOOLS_SUMMARY ? '摘要（结束追加一行统计，贴近原生）' : TOOLS_COMPACT ? '紧凑（单行回显）' : '完整（参数+结果，调试用）'}`)
   console.log(`  推理透传        : ${SHOW_REASONING ? '开（reasoning_content）' : '关（DSH_BRIDGE_SHOW_REASONING=1 开启）'}`)
   console.log(`  会话存档保留    : 最新 ${MAX_SESSIONS} 个（目录=${SESSION_DIR}）`)
   console.log(`  上下文保护      : 上限 ${CONTEXT_LIMIT.toLocaleString()} tokens，超 ${Math.round(CONTEXT_RESET_RATIO * 100)}% 自动重置会话；超限请求自动重置并重试`)
