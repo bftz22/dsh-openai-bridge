@@ -10,7 +10,7 @@
 注意：服务模式与窗口模式（start-dsh-chatbox.bat）二选一，不要同时开。
 #>
 param(
-  [string]$RepoDir = "C:\Users\Administrator\deepseek-harness"
+  [string] = (Join-Path $HOME 'deepseek-harness')
 )
 
 $ErrorActionPreference = 'Stop'
