@@ -1,5 +1,10 @@
 # dsh-openai-bridge
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-1.1.2-blue.svg)](CHANGELOG.md)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)]()
+[![Node](https://img.shields.io/badge/Node-%3E%3D22.19-green.svg)]()
+
 让 **Chatbox**（以及任何 OpenAI 兼容客户端）直接使用 **DeepSeek Harness（dsh）** 构建的
 Agent：不止聊天，而是能**执行命令、读写文件、拆解任务、带上下文和持久化记忆**的完整智能体。
 
@@ -256,6 +261,7 @@ Windows PowerShell 对应：`$env:DEEPSEEK_API_KEY = "sk-…"` 后再 `node serv
 
 | 现象 | 原因 | 解决 |
 |---|---|---|
+| Node 24 启动即崩（`ERR_AMBIGUOUS_MODULE_SYNTAX` / `__dirname`） | server.mjs 使用了 CommonJS 的 `__dirname` 与顶层 await 混用 | 升级到 **v1.1.2+**（已改用 `import.meta.dirname`）；旧版可手动把 `__dirname` 替换为 `import.meta.dirname` |
 | 启动报「禁止运行脚本」 | Windows 执行策略 | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
 | 安装时 npm/pnpm 下载慢或失败 | 官方源慢 | 脚本已自动切 npmmirror；手动：`npm config set registry https://registry.npmmirror.com` |
 | 运行时插件找不到（`Cannot find package '@deepseek-ai/dsh-*'`） | pnpm 未把 workspace 包链接到根 node_modules | 在仓库根执行 `pnpm add -w <插件列表>`（见手动安装） |
@@ -297,8 +303,9 @@ node smoke-test.mjs --model deepseek-v4-flash   # 指定模型（默认读 DSH_B
 ## 🤝 开源与贡献
 
 - 本项目基于 **MIT License** 开源；`cordis*.yml` 改编自 DeepSeek Harness 官方示例
-  （MIT，署名保留在文件头与 LICENSE 中）。
+  （MIT，署名保留在文件头与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 中）。
 - 上游：DeepSeek Harness（dsh）https://github.com/deepseek-ai/deepseek-harness
+- 更新记录见 [CHANGELOG.md](CHANGELOG.md)
 - 欢迎提交 issue / PR：功能请求（如思考过程在 Chatbox 的原生展示）、
   Bug 报告（请附 `DSH_BRIDGE_DEBUG=1` 日志）、文档改进。
 

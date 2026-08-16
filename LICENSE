@@ -19,15 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Third-party notices:
-
-- `cordis.yml` and `cordis-windows.yml` are adapted from the official
-  DeepSeek Harness example configurations:
-  https://github.com/deepseek-ai/deepseek-harness/blob/main/examples/jsonrpc-agent/cordis.yml
-  Copyright (c) DeepSeek AI, licensed under the MIT License.
-- This project drives DeepSeek Harness (dsh) via its official SDK
-  (`@deepseek-ai/dsh-sdk-client`). dsh is Copyright (c) DeepSeek AI,
-  licensed under the MIT License.
