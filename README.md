@@ -57,6 +57,8 @@ bash（macOS/Linux）/ PowerShell（Windows）/ 文件系统 / 子代理 / todo 
 
 ## 🚀 快速开始（一键安装）
 
+> 📖 **中文部署手册（AI 自助施工版）**：人工 5 步装出基础管家，之后把手册发给 AI，技能包/画图/视觉/邮件等剩余配置全部由 AI 自动完成 → [docs/部署手册-中文版.md](docs/部署手册-中文版.md)
+
 ### Windows
 
 ```powershell
