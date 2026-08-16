@@ -1,6 +1,8 @@
 ﻿# collect-diag.ps1 - collect diagnostic info for remote troubleshooting
 # run: powershell -ExecutionPolicy Bypass -File collect-diag.ps1 [-EmailTo 收件邮箱]
 # -EmailTo: 生成后自动通过发件人邮箱（QQ/163 SMTP）把诊断文件发到收件邮箱
+# SECURITY: 本脚本不含任何默认收件人；不加 -EmailTo 时绝不发送邮件。
+#           收件邮箱完全由使用者显式指定（自己的或信任的指导者的邮箱）。
 # output: 诊断信息-<timestamp>.txt in current directory (NO secrets included)
 #encoding: utf-8 with BOM (required by PS 5.1)
 
