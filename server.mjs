@@ -30,8 +30,8 @@
 
 import http from 'node:http'
 import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { createReadStream, existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /* ------------------------------------------------------------------ */
@@ -102,6 +102,16 @@ const MAX_SESSIONS = Number(process.env.DSH_BRIDGE_MAX_SESSIONS ?? 20)
 const SESSION_PREFIX = `chatbox-${randomUUID().slice(0, 8)}`
 // 调试模式：设为 1 时输出每条会话事件等详细日志（排查问题时开启）
 const DEBUG = process.env.DSH_BRIDGE_DEBUG === '1'
+// 模型上下文上限（token）。deepseek-v4-flash 为 1048576；可经环境变量覆盖。
+const CONTEXT_LIMIT = Number(process.env.DSH_BRIDGE_CONTEXT_LIMIT ?? 1_048_576)
+// 主动重置阈值：上一轮实际输入 token 数达到 CONTEXT_LIMIT × 该比例时，
+// 下一轮请求前自动重置会话，避免历史累积到超限（dsh 自带压缩常因 token
+// 统计口径不一致而拦不住，故在桥接层做兜底）。0~1 之间。
+const CONTEXT_RESET_RATIO = Number(process.env.DSH_BRIDGE_CONTEXT_RESET_RATIO ?? 0.72)
+// 图片静态服务：把 ComfyUI 输出目录挂到 http://127.0.0.1:PORT/output/<文件名>，
+// 让 agent 在回复里用 markdown 图片链接展示生成结果（Chatbox 可直接渲染），
+// 避免把图片 base64 塞进对话上下文导致超限。
+const IMAGE_OUTPUT_DIR = process.env.DSH_BRIDGE_OUTPUT_DIR ?? 'F:\\ComfyUI-aki-v3.2\\ComfyUI\\output'
 
 if (!process.env.DEEPSEEK_API_KEY) {
   console.warn('[dsh-openai-bridge] 警告：未设置 DEEPSEEK_API_KEY，运行时将无法调用模型。')
@@ -169,7 +179,7 @@ const threads = new Map()
 function getThread(threadKey) {
   let t = threads.get(threadKey)
   if (!t) {
-    t = { gen: 0, busy: Promise.resolve() }
+    t = { gen: 0, busy: Promise.resolve(), lastInputTokens: 0 }
     threads.set(threadKey, t)
   }
   return t
@@ -185,6 +195,26 @@ function resetThread(threadKey) {
   const t = threads.get(threadKey)
   if (!t) return
   t.gen += 1
+  t.lastInputTokens = 0
+}
+
+/**
+ * 判断一个错误是否为“上下文超限”（模型 context window exceeded）。
+ * dsh 的 LlmError 会带 code=CONTEXT_WINDOW_EXCEEDED；上游网关错误文本
+ * 通常形如 "This model's maximum context length is … tokens …"。
+ */
+function isContextOverflow(err) {
+  if (!err) return false
+  if (err?.code === 'CONTEXT_WINDOW_EXCEEDED') return true
+  const msg = [
+    err?.message,
+    err?.failure?.message,
+    err?.name,
+    typeof err === 'string' ? err : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+  return /(maximum\s+context\s+(length|window)|context_length_exceeded|CONTEXT_WINDOW_EXCEEDED)/i.test(msg)
 }
 
 function resolveThreadKey(req) {
@@ -294,6 +324,78 @@ function readBody(req) {
   })
 }
 
+const IMAGE_MIME = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.bmp': 'image/bmp',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+}
+
+/** 图片静态服务：GET /output → JSON 文件清单；GET /output/<文件> → 图片内容 */
+function serveOutputFile(res, requestPath) {
+  // 去掉 /output 前缀：/output 或 /output/ → 清单；/output/<文件> → 文件
+  const rest = requestPath.replace(/^\/+/, '').replace(/^output\/?/, '')
+  const rel = rest.split('/').filter(Boolean)
+  if (rel.length === 0) {
+    // 目录清单（按时间倒序，前 50 个），方便 agent 和用户确认最新生成结果
+    let files
+    try {
+      files = readdirSync(IMAGE_OUTPUT_DIR, { withFileTypes: true })
+        .filter((e) => e.isFile())
+        .map((e) => {
+          try {
+            const st = statSync(join(IMAGE_OUTPUT_DIR, e.name))
+            return { name: e.name, size: st.size, mtime: st.mtimeMs }
+          } catch {
+            return null
+          }
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.mtime - a.mtime)
+        .slice(0, 50)
+    } catch {
+      sendError(res, 500, `output 目录不可读: ${IMAGE_OUTPUT_DIR}`)
+      return
+    }
+    sendJson(res, 200, { outputDir: IMAGE_OUTPUT_DIR, count: files.length, files })
+    return
+  }
+  if (rel.length > 1) {
+    sendError(res, 404, 'only top-level files under output are served')
+    return
+  }
+  // 只允许顶层文件名，杜绝目录穿越
+  const name = basename(rel[0])
+  const filePath = resolve(IMAGE_OUTPUT_DIR, name)
+  if (!filePath.startsWith(resolve(IMAGE_OUTPUT_DIR) + '\\') && filePath !== resolve(IMAGE_OUTPUT_DIR)) {
+    sendError(res, 403, 'forbidden')
+    return
+  }
+  let st
+  try {
+    st = statSync(filePath)
+  } catch {
+    sendError(res, 404, `file not found: ${name}`)
+    return
+  }
+  if (!st.isFile()) {
+    sendError(res, 404, `not a file: ${name}`)
+    return
+  }
+  const ext = basename(name).slice(basename(name).lastIndexOf('.')).toLowerCase()
+  res.writeHead(200, {
+    ...CORS,
+    'Content-Type': IMAGE_MIME[ext] ?? 'application/octet-stream',
+    'Content-Length': st.size,
+    'Cache-Control': 'public, max-age=3600',
+  })
+  createReadStream(filePath).pipe(res)
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`)
   const path = url.pathname
@@ -312,6 +414,13 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && norm === '/healthz') {
     sendJson(res, 200, { status: 'ok', harnesses: harnesses.size })
+    return
+  }
+
+  // 图片静态服务：GET /output/<文件名> 返回图片；GET /output 返回文件清单。
+  // 仅允许输出目录下的顶层文件（防目录穿越），方便 agent 用 markdown 展示生成结果。
+  if (req.method === 'GET' && (norm === '/output' || norm.startsWith('/output/'))) {
+    serveOutputFile(res, decodeURIComponent(url.pathname))
     return
   }
 
@@ -446,6 +555,8 @@ async function handleChatCompletion(req, res) {
       '  /help          — 显示本帮助',
       '',
       '其余消息会直接交给 dsh Agent 执行（可调用 bash / 文件系统 / 子代理等工具）。',
+      `上下文保护：上一轮输入达到模型上限(${CONTEXT_LIMIT.toLocaleString()} tokens)的 ${Math.round(CONTEXT_RESET_RATIO * 100)}% 时会自动重置会话；`,
+      '请求因上下文超限失败时也会自动重置会话并重试一次。',
       '系统提示词：首次请求携带 system 消息时会自动应用（并触发一次运行时重建）。',
     ].join('\n')
     if (stream) {
@@ -461,7 +572,6 @@ async function handleChatCompletion(req, res) {
 
   // 执行一次 dsh agent 回合（含工具调用循环），并把结果转回 OpenAI 格式
   await withThreadLock(thread, async () => {
-    const sessionId = sessionIdOf(threadKey, thread)
     let harness
     try {
       harness = getHarness(model)
@@ -471,47 +581,117 @@ async function handleChatCompletion(req, res) {
       return
     }
 
-    if (stream) {
-      writeSseHeaders(res, model)
-      await runStreaming(harness, sessionId, prompt, model, res)
-    } else {
+    // 主动防御：上一轮实际输入已接近模型上下文上限时，先重置会话再处理本轮，
+    // 避免历史继续累积到超限（dsh 自带压缩常因 token 统计口径不一致而拦不住）。
+    if (thread.lastInputTokens >= CONTEXT_LIMIT * CONTEXT_RESET_RATIO) {
+      const pct = Math.round((thread.lastInputTokens / CONTEXT_LIMIT) * 100)
+      console.log(`[bridge] 上下文防御：上一轮输入 ${thread.lastInputTokens} tokens（上限 ${CONTEXT_LIMIT} 的 ${pct}%），自动重置会话避免超限`)
+      resetThread(threadKey)
+    }
+
+    // 执行一次回合；若返回 overflow=true 表示上下文超限（需要重置会话后重试）
+    const attempt = async (sid, notice) => {
+      if (stream) {
+        if (notice) writeSseDelta(res, model, notice)
+        const r = await runStreaming(harness, sid, prompt, model, res, thread)
+        return r.overflow ? { overflow: true, error: r.error } : { overflow: false }
+      }
       try {
-        const traceLines = []
-        const reasoningParts = []
-        const result = await harness.run(prompt, {
-          sessionId,
-          onNotification: (n) => {
-            if (n.method !== 'session.event' || n.params.sessionId !== sessionId) return
-            const ev = n.params.event
-            if (!ev || typeof ev.type !== 'string') return
-            const data = ev.data ?? {}
-            if (SHOW_TOOLS && ev.type === 'tool/call') traceLines.push(toolCallLine(data))
-            else if (SHOW_TOOLS && ev.type === 'tool/result') traceLines.push(toolResultLine(data))
-            else if (SHOW_REASONING && ev.type === 'assistant/message') {
-              // 收集最终消息里的推理块（{ type: 'reasoning', text }）
-              const blocks = Array.isArray(data.message?.content) ? data.message.content : []
-              for (const b of blocks) {
-                if (b?.type === 'reasoning' && typeof b.text === 'string' && b.text) reasoningParts.push(b.text)
-              }
-            }
-          },
-        })
-        const trace = traceLines.length ? `${traceLines.join('\n\n')}\n\n` : ''
-        const content = `${trace}${result.finalResponse ?? ''}`
-        console.log(`[bridge] 回合结束 流式=false 最终文本=${content.length}字 工具记录=${traceLines.length}条 推理=${reasoningParts.length ? reasoningParts.join('').length + '字' : '未收集'}`)
-        const payload = completionJson(model, content, result)
-        if (SHOW_REASONING && reasoningParts.length) {
-          payload.choices[0].message.reasoning_content = reasoningParts.join('\n')
-        }
-        sendJson(res, 200, payload)
+        await runNonStreaming(harness, sid, prompt, model, res, thread)
+        return { overflow: false }
       } catch (err) {
-        console.error('[bridge] dsh 执行失败:', err)
-        if (!res.headersSent) {
-          sendError(res, 500, `dsh run failed: ${err.message}`, 'dsh_run_error')
+        if (isContextOverflow(err)) return { overflow: true, error: err }
+        throw err
+      }
+    }
+
+    if (stream) writeSseHeaders(res, model)
+
+    try {
+      let outcome = await attempt(sessionIdOf(threadKey, thread))
+      if (outcome.overflow) {
+        // 自愈：上下文超限 → 自动重置会话 → 用同一消息重试一次
+        console.log('[bridge] 上下文超限，已自动重置会话并重试一次')
+        resetThread(threadKey)
+        outcome = await attempt(sessionIdOf(threadKey, thread), '\n\n（上下文已超限，已自动重置会话，正在重试…）\n\n')
+        if (outcome.overflow) {
+          // 重试仍超限（例如用户单条消息本身就超过上限）
+          console.error('[bridge] 重置会话后重试仍超限:', outcome.error)
+          const msg = `上下文超限：请求内容超过模型上限 ${CONTEXT_LIMIT.toLocaleString()} tokens（${outcome.error?.message ?? ''}）。\n可发送 /clear 重置会话，或缩短消息内容后重试。`
+          if (stream) {
+            writeSseDelta(res, model, `\n\n[错误] ${msg}`)
+            writeSseEnd(res, model, null, 'stop')
+            res.end()
+          } else if (!res.headersSent) {
+            sendError(res, 429, msg, 'context_length_exceeded')
+          }
         }
+      }
+    } catch (err) {
+      // 非超限错误：保证客户端一定能收到响应（不挂起）
+      console.error('[bridge] dsh 执行失败:', err)
+      if (stream) {
+        if (!res.writableEnded) {
+          try {
+            writeSseDelta(res, model, `[桥接错误] ${err?.message ?? String(err)}`)
+            writeSseEnd(res, model, null, 'stop')
+            res.end()
+          } catch {
+            /* 客户端已断开 */
+          }
+        }
+      } else if (!res.headersSent) {
+        sendError(res, 500, `dsh run failed: ${err.message}`, 'dsh_run_error')
       }
     }
   })
+}
+
+/** 非流式：执行一次 dsh 回合，把结果拼成 OpenAI completion JSON 并返回。 */
+async function runNonStreaming(harness, sessionId, prompt, model, res, thread) {
+  const traceLines = []
+  const reasoningParts = []
+  const result = await harness.run(prompt, {
+    sessionId,
+    onNotification: (n) => {
+      if (n.method !== 'session.event' || n.params.sessionId !== sessionId) return
+      const ev = n.params.event
+      if (!ev || typeof ev.type !== 'string') return
+      const data = ev.data ?? {}
+      if (SHOW_TOOLS && ev.type === 'tool/call') traceLines.push(toolCallLine(data))
+      else if (SHOW_TOOLS && ev.type === 'tool/result') traceLines.push(toolResultLine(data))
+      else if (ev.type === 'assistant/message' && data.usage) {
+        thread.lastInputTokens = Number(data.usage.inputTokens ?? data.usage.promptTokens ?? 0)
+      }
+      if (SHOW_REASONING && ev.type === 'assistant/message') {
+        // 收集最终消息里的推理块（{ type: 'reasoning', text }）
+        const blocks = Array.isArray(data.message?.content) ? data.message.content : []
+        for (const b of blocks) {
+          if (b?.type === 'reasoning' && typeof b.text === 'string' && b.text) reasoningParts.push(b.text)
+        }
+      }
+    },
+  })
+
+  // 超限可能以 turn/end(error) 事件返回而非抛出异常：扫描事件，命中则抛出以便上层重试
+  const turnEndErr = result.events
+    ?.filter((e) => e?.type === 'turn/end' && e?.data?.reason?.kind === 'error')
+    .map((e) => e.data.reason.error ?? e.data.reason.failure)
+    .find((err) => err && isContextOverflow(err))
+  if (turnEndErr) {
+    const e = turnEndErr instanceof Error ? turnEndErr : new Error(turnEndErr.message ?? String(turnEndErr))
+    e.code = turnEndErr.code
+    throw e
+  }
+
+  const trace = traceLines.length ? `${traceLines.join('\n\n')}\n\n` : ''
+  const content = `${trace}${result.finalResponse ?? ''}`
+  console.log(`[bridge] 回合结束 流式=false 最终文本=${content.length}字 工具记录=${traceLines.length}条 推理=${reasoningParts.length ? reasoningParts.join('').length + '字' : '未收集'} 输入tokens=${thread.lastInputTokens}`)
+  const payload = completionJson(model, content, result)
+  if (SHOW_REASONING && reasoningParts.length) {
+    payload.choices[0].message.reasoning_content = reasoningParts.join('\n')
+  }
+  sendJson(res, 200, payload)
 }
 
 /* ------------------------------------------------------------------ */
@@ -632,11 +812,13 @@ function writeSseEnd(res, model, usage, finishReason = 'stop') {
  *   turn/end                                → finish_reason
  *   session.status idle                     → 结束流
  */
-async function runStreaming(harness, sessionId, prompt, model, res) {
+async function runStreaming(harness, sessionId, prompt, model, res, thread) {
   let ended = false
   let finalText = ''
   let usage = null
   let finishReason = 'stop'
+  let overflow = false
+  let overflowError = null
 
   const finish = () => {
     if (ended) return
@@ -672,6 +854,14 @@ async function runStreaming(harness, sessionId, prompt, model, res) {
             if (text) writeSseReasoningDelta(res, model, text)
           }
         } else if (ev.type === 'assistant/chunk') {
+          // 回合可能以 error 收尾（例如首次 LLM 调用即超限）：finish 块里携带失败原因
+          if (data.chunk?.type === 'finish' && data.chunk?.reason?.kind === 'error') {
+            const err = data.chunk.reason.failure ?? data.chunk.reason.error
+            if (err && isContextOverflow(err)) {
+              overflow = true
+              overflowError = err
+            }
+          }
           if (DEBUG) console.log(`[bridge]   流块: ${data.chunk?.type ?? '未知'}`)
         } else if (ev.type === 'user/message') {
           if (DEBUG) console.log(`[bridge]   用户侧消息来源=${data.source?.kind ?? '?'}`)
@@ -691,12 +881,24 @@ async function runStreaming(harness, sessionId, prompt, model, res) {
             .join('')
           if (DEBUG) console.log(`[bridge]   assistant消息 文本=${text.length}字 内容块=${blocks.length} usage=${data.usage ? '有' : '无'}`)
           if (text) finalText = text
-          if (data.usage) usage = mapUsage(data.usage)
+          if (data.usage) {
+            usage = mapUsage(data.usage)
+            // 记录本轮实际输入 token 数，供“主动防御”判断是否接近上下文上限
+            thread.lastInputTokens = Number(data.usage.inputTokens ?? data.usage.promptTokens ?? 0)
+          }
         } else if (ev.type === 'turn/end') {
-          const kind = data.reason?.kind
-          if (DEBUG) console.log(`[bridge]   回合结束 reason=${JSON.stringify(data.reason)}`)
-          if (kind === 'max-tokens') finishReason = 'length'
-          else if (kind === 'error') finishReason = 'stop'
+          const reason = data.reason
+          const kind = reason?.kind
+          if (DEBUG) console.log(`[bridge]   回合结束 reason=${JSON.stringify(reason)}`)
+          if (kind === 'error') {
+            // 超限可能以 turn/end(error) 事件返回而非抛出异常，这里同样识别
+            const err = reason.error ?? reason.failure
+            if (err && isContextOverflow(err)) {
+              overflow = true
+              overflowError = err
+            }
+            finishReason = 'stop'
+          } else if (kind === 'max-tokens') finishReason = 'length'
           else finishReason = 'stop'
         } else {
           if (DEBUG) console.log(`[bridge]   事件: ${ev.type}`)
@@ -704,9 +906,13 @@ async function runStreaming(harness, sessionId, prompt, model, res) {
       },
     })
   } catch (err) {
-    // 传输/协议错误：打印到控制台，并把错误作为普通文本追加到流内（Chatbox 可显示）
     console.error('[bridge] dsh 执行失败:', err)
-    if (!ended) {
+    if (isContextOverflow(err)) {
+      // 上下文超限：不结束流、不写错误文本，由上层重置会话后原地重试
+      overflow = true
+      overflowError = err
+    } else if (!ended) {
+      // 传输/协议错误：打印到控制台，并把错误作为普通文本追加到流内（Chatbox 可显示）
       try {
         writeSseDelta(res, model, `[桥接错误] ${err?.message ?? String(err)}`)
       } catch {
@@ -714,9 +920,11 @@ async function runStreaming(harness, sessionId, prompt, model, res) {
       }
     }
   } finally {
-    console.log(`[bridge] 回合结束 流式=${true} 最终文本=${finalText.length}字 结束原因=${finishReason}`)
-    finish()
+    console.log(`[bridge] 回合结束 流式=${true} 最终文本=${finalText.length}字 结束原因=${finishReason} 输入tokens=${thread.lastInputTokens}${overflow ? '（上下文超限）' : ''}`)
+    // 超限时保持流打开，等待上层重置会话后重试；其余情况正常收尾
+    if (!overflow) finish()
   }
+  return { overflow, error: overflowError }
 }
 
 /* ------------------------------------------------------------------ */
@@ -767,6 +975,8 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`  工具过程展示    : ${SHOW_TOOLS ? '开（每次工具调用都会显示在回复中）' : '关'}`)
   console.log(`  推理透传        : ${SHOW_REASONING ? '开（reasoning_content）' : '关（DSH_BRIDGE_SHOW_REASONING=1 开启）'}`)
   console.log(`  会话存档保留    : 最新 ${MAX_SESSIONS} 个（目录=${SESSION_DIR}）`)
+  console.log(`  上下文保护      : 上限 ${CONTEXT_LIMIT.toLocaleString()} tokens，超 ${Math.round(CONTEXT_RESET_RATIO * 100)}% 自动重置会话；超限请求自动重置并重试`)
+  console.log(`  图片服务        : http://127.0.0.1:${PORT}/output/<文件名>（目录=${IMAGE_OUTPUT_DIR}）`)
   console.log('')
   console.log('  Chatbox 配置：设置 → 模型提供方 → 添加自定义 OpenAI 兼容')
   console.log(`  API 地址：http://127.0.0.1:${PORT}/v1   API 密钥：任意非空值`)

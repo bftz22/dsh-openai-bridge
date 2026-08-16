@@ -84,3 +84,7 @@
   原生工具调用界面无法对接；本桥以「工具过程展示」作为替代方案
 - bash 执行器仅支持 POSIX；Windows 上使用 PowerShell 执行器（官方对应实现）
 - dsh 处于开发者预览期（v0.1.0-rc），接口可能变化，遇到问题请更新 dsh 后重试
+
+## v1.1.1 (2026-08-16)
+- sync: 更新 server.mjs（本机实际运行版）、watchdog.cmd（加固版）、cordis.yml（guard 接线）
+- feat: 新增 launch-dsh.cmd/vbs（一键启动器）、restart-bridge.cmd、status-bridge.cmd、start-watchdog*.bat/vbs、预编译 guard.exe

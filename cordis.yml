@@ -1,12 +1,12 @@
-# dsh-openai-bridge 运行时配置
-# 说明：本文件改编自 DeepSeek Harness 官方示例
+# dsh-openai-bridge 运行时配置（Windows 版）
+# 本文件由 fix-and-handover.ps1 自动写入（内容与安装包 cordis-windows.yml 一致）。
+# 改编自 DeepSeek Harness 官方示例（MIT License, Copyright (c) DeepSeek AI）：
 #   https://github.com/deepseek-ai/deepseek-harness/blob/main/examples/jsonrpc-agent/cordis.yml
-#   （MIT License, Copyright (c) DeepSeek AI）
 # 用途：以 headless 方式启动 dsh 运行时（dsh-jsonrpc-agent），
 #       stdout 保留给 JSON-RPC 协议，请勿在此添加 console logger 或终端 UI。
-#
-# 你可以按需增删插件（例如去掉 tool-bash / tool-fs 限制权限），
-# 或换成官方 minimal.cordis.yml（更简化的 agent 组合）。
+# Windows 差异：dsh 的 bash 执行器仅支持 POSIX（官方声明），
+# 这里改用官方 Windows 对应实现 pwsh-local（自动探测 PowerShell 7，
+# 找不到则回退到 Windows 自带的 PowerShell 5.1），工具为 pwsh。
 
 - id: sdk-jsonrpc-server
   name: '@deepseek-ai/dsh-sdk-jsonrpc-server'
@@ -21,15 +21,23 @@
     thinking: enabled
     reasoningEffort: max
 
-# bash 执行器（子进程管理）
+# PowerShell 执行器（Windows 对应 bash-local；自动解析 pwsh/powershell 路径）
 - id: subprocess
   name: '@deepseek-ai/dsh-subprocess-local'
 
-- id: bash
-  name: '@deepseek-ai/dsh-bash-local'
+- id: pwsh
+  name: '@deepseek-ai/dsh-pwsh-local'
   config:
     cwd: !!js process.env.DSH_CWD ?? process.cwd()
     timeoutMs: 60000
+    # 安全闸：指向 guard.exe（由 install-guard.ps1 编译并写入 .env 的 DSH_PWSH_GUARD）。
+    # guard 会拦截 taskkill/Stop-Process/关机/删系统路径等危险命令后转发给真实 PowerShell；
+    # 未安装 guard 时该值为 undefined，自动回退到正常探测。
+    pwshPath: !!js process.env.DSH_PWSH_GUARD
+
+# shell-env：向每次 pwsh 调用注入受信任的 DSH_* 环境（tool-pwsh 依赖）
+- id: shell-env
+  name: '@deepseek-ai/dsh-shell-env'
 
 - id: agent-spine
   name: '@deepseek-ai/dsh-agent-spine-demo'
@@ -38,9 +46,12 @@
     workspaceContext: false
     skills:
       enabled: false
-    toolBash:
-      enableRunInBackground: false
+    # spine 默认捆绑 bash 工具；Windows 上改用独立的 tool-pwsh，故关掉
+    toolBash: false
     toolJobs: false
+
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
 
 - id: sessions
   name: '@deepseek-ai/dsh-session-persistence-jsonl'
