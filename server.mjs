@@ -30,7 +30,7 @@
 
 import http from 'node:http'
 import { randomUUID } from 'node:crypto'
-import { createReadStream, existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -451,21 +451,59 @@ const server = http.createServer(async (req, res) => {
  * 从消息内容中提取纯文本。兼容 OpenAI 的两种写法：
  *  - content: "字符串"
  *  - content: [{ type: 'text', text: '...' }, ...]（内容块数组）
+ *
+ * 图片处理（2026-08-16 新增）：
+ *  Chatbox 随消息附带的图片（image_url 内容块）不再被静默丢弃——
+ *  保存到本机收件箱 DSH_BRIDGE_IMAGE_INBOX（默认 images/inbox），
+ *  并把保存路径作为提示注入文本，让 Agent 用视觉技能（skills\vision）查看。
+ *  仅接受 data: 协议（图片留在本机），http(s) 链接不下载（防 SSRF）。
  */
+const IMAGE_INBOX_DIR = process.env.DSH_BRIDGE_IMAGE_INBOX ?? join(__dirname, 'images', 'inbox')
+try { mkdirSync(IMAGE_INBOX_DIR, { recursive: true }) } catch { /* 忽略 */ }
+
+function saveChatImage(dataUrl, seq) {
+  if (typeof dataUrl !== 'string') return null
+  const m = dataUrl.match(/^data:(image\/[\w.+-]+);base64,([\s\S]+)$/)
+  if (!m) return null
+  const extMap = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif', 'image/bmp': '.bmp' }
+  const ext = extMap[m[1]] ?? '.png'
+  try {
+    const buf = Buffer.from(m[2], 'base64')
+    const name = `chatbox-${new Date().toISOString().replace(/[:.]/g, '-')}-${seq}${ext}`
+    const p = join(IMAGE_INBOX_DIR, name)
+    writeFileSync(p, buf)
+    return p
+  } catch {
+    return null
+  }
+}
+
 function extractText(content) {
   if (typeof content === 'string') return content
   if (Array.isArray(content)) {
-    return content
-      .map((b) => {
-        if (typeof b === 'string') return b
-        if (b && typeof b === 'object') {
-          if (typeof b.text === 'string') return b.text
-          if (typeof b.content === 'string') return b.content
+    let parts = []
+    let imgCount = 0
+    for (const b of content) {
+      if (typeof b === 'string') { parts.push(b); continue }
+      if (b && typeof b === 'object') {
+        if (typeof b.text === 'string') { parts.push(b.text); continue }
+        if (typeof b.content === 'string') { parts.push(b.content); continue }
+        if (b.type === 'image_url') {
+          const url = typeof b.image_url === 'string' ? b.image_url : b.image_url?.url
+          const saved = saveChatImage(url, ++imgCount)
+          if (saved) {
+            parts.push(
+              `\n[系统] 用户随消息附带了一张图片，已保存至 ${saved}。` +
+              `如需要查看，请调用视觉技能查看：` +
+              `powershell -File C:\\Users\\Administrator\\deepseek-harness\\skills\\vision\\vision-ask.ps1 -Image "${saved}" -Question "描述这张图片的内容"`
+            )
+          } else {
+            parts.push('\n[系统] 用户附带了图片，但未能保存（非 data 协议或解析失败）')
+          }
         }
-        return ''
-      })
-      .join('')
-      .trim()
+      }
+    }
+    return parts.join('').trim()
   }
   return ''
 }
