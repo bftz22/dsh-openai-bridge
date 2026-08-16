@@ -1,7 +1,12 @@
 ﻿# collect-diag.ps1 - collect diagnostic info for remote troubleshooting
-# run: powershell -ExecutionPolicy Bypass -File collect-diag.ps1
+# run: powershell -ExecutionPolicy Bypass -File collect-diag.ps1 [-EmailTo 收件邮箱]
+# -EmailTo: 生成后自动通过发件人邮箱（QQ/163 SMTP）把诊断文件发到收件邮箱
 # output: 诊断信息-<timestamp>.txt in current directory (NO secrets included)
 #encoding: utf-8 with BOM (required by PS 5.1)
+
+param(
+  [string]$EmailTo = ""
+)
 
 $ErrorActionPreference = "Continue"
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -97,3 +102,50 @@ $utf8Bom = New-Object System.Text.UTF8Encoding($true)
 Write-Host ""
 Write-Host "诊断信息已生成: $out"
 Write-Host "请把这个文件发给部署指导者（不含任何密钥）。"
+
+# ---------------------------------------------------------------- 邮箱直发（-EmailTo）
+if ($EmailTo -ne "") {
+  Write-Host ""
+  Write-Host "检测到 -EmailTo，将通过 SMTP 把诊断文件发送到: $EmailTo"
+  $smtpUser = Read-Host "发件邮箱（QQ 或 163，需已开启 SMTP 服务）"
+  $smtpPass = Read-Host "发件邮箱授权码（输入时不可见，不落盘）" -AsSecureString
+  $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($smtpPass)
+  $passPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringUnicode($bstr)
+  [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+  $smtpHost = ""
+  if ($smtpUser -match "@qq\.com$") { $smtpHost = "smtp.qq.com" }
+  elseif ($smtpUser -match "@163\.com$") { $smtpHost = "smtp.163.com" }
+  else {
+    $smtpHost = Read-Host "未能识别邮箱服务商，请输入 SMTP 服务器地址（如 smtp.qq.com）"
+  }
+  try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls
+    $sent = $false
+    # 优先 587 STARTTLS（实测稳定），465 隐式 SSL 兜底
+    foreach ($port in @(587, 465)) {
+      try {
+        $smtp = New-Object Net.Mail.SmtpClient($smtpHost, $port)
+        $smtp.EnableSsl = $true
+        $smtp.Timeout = 30000
+        $smtp.Credentials = New-Object System.Net.NetworkCredential($smtpUser, $passPlain)
+        $msg = New-Object Net.Mail.MailMessage($smtpUser, $EmailTo)
+        $msg.Subject = "AI 管家部署诊断信息 $stamp"
+        $msg.Body = "部署诊断信息见附件。由 collect-diag.ps1 自动生成，不含任何密钥。"
+        $att = New-Object Net.Mail.Attachment($out)
+        $msg.Attachments.Add($att)
+        $smtp.Send($msg)
+        $msg.Dispose(); $att.Dispose()
+        $sent = $true
+        Write-Host "[OK] 邮件已通过 $smtpHost`:$port 发送到 $EmailTo"
+        break
+      } catch {
+        Write-Host "  端口 $port 发送失败，尝试下一个 ..."
+      }
+    }
+    if (-not $sent) { throw "全部端口发送失败" }
+  } catch {
+    Write-Host "[FAIL] 邮件发送失败: $($_.Exception.Message)"
+    Write-Host "请手动把 $out 通过任意方式（微信/网页邮箱附件）发给部署指导者。"
+  }
+}
+Write-Host "完成。"
