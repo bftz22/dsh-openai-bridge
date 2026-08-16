@@ -458,7 +458,7 @@ const server = http.createServer(async (req, res) => {
  *  并把保存路径作为提示注入文本，让 Agent 用视觉技能（skills\vision）查看。
  *  仅接受 data: 协议（图片留在本机），http(s) 链接不下载（防 SSRF）。
  */
-const IMAGE_INBOX_DIR = process.env.DSH_BRIDGE_IMAGE_INBOX ?? join(__dirname, 'images', 'inbox')
+const IMAGE_INBOX_DIR = process.env.DSH_BRIDGE_IMAGE_INBOX ?? join(import.meta.dirname, 'images', 'inbox')
 try { mkdirSync(IMAGE_INBOX_DIR, { recursive: true }) } catch { /* 忽略 */ }
 
 function saveChatImage(dataUrl, seq) {
