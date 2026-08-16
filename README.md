@@ -147,6 +147,7 @@ chmod +x install.sh
 | `docs/使用说明书-Mac版.md` | 零代码经验用户手册（macOS/Linux） |
 | `docs/Cherry-Studio配置说明.md` | Cherry Studio 连接桥的详细图文配置（零改动法 + OpenAI 添加法） |
 | `docs/部署手册-中文版.md` | AI 自助施工部署手册（人工 5 步 + AI 施工 7 项，含进度卡机制） |
+| `tools/check-env.bat` / `tools/check-env.ps1` | 一键环境体检（Git/Node/VC++/WebView2/代理/网络），缺失项自动 winget 安装 |
 | `tools/check-bridge.bat` / `tools/check-bridge.ps1` | 三层自检（桥进程 → 模型列表 → 真实对话），双击 bat 即可 |
 | `tools/repair-links.ps1` | 修复 18 个运行时插件链接（junction 重建，解决对话 500 / 插件树加载失败） |
 | `smoke-test.mjs` | 自检脚本：一键验证 healthz / 模型列表 / 流式补全 / 工具调用 / 多轮上下文（见「自检」） |
