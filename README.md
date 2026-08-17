@@ -57,7 +57,7 @@ bash（macOS/Linux）/ PowerShell（Windows）/ 文件系统 / 子代理 / todo 
 
 ## 🚀 快速开始（一键安装）
 
-> 📖 **中文部署手册（AI 自助施工版）**：人工 5 步装出基础管家，之后把手册发给 AI，技能包/画图/视觉/邮件等剩余配置全部由 AI 自动完成 → [docs/部署手册-中文版.md](docs/部署手册-中文版.md)
+> 📖 **中文部署手册（一键呆瓜版）**：全程只需双击 + 输一次密钥——装完桥自动发施工令，dsh 自动接管（技能包/画图/看图/邮件等按需配置）→ [docs/部署手册-中文版.md](docs/部署手册-中文版.md)
 
 ### Windows
 
@@ -143,10 +143,9 @@ chmod +x install.sh
 | `watchdog.cmd` | 看门狗：node 退出后 3 秒自动重启（防误杀/崩溃） |
 | `install-guard.ps1` | 编译并安装 guard.exe，写入 `.env` 的 `DSH_PWSH_GUARD` |
 | `install-service.ps1` / `uninstall-service.ps1` / `service-status.ps1` | 后台服务（计划任务）安装/卸载/状态检查 |
-| `docs/使用说明书-小白版.md` | 零代码经验用户手册（Windows） |
 | `docs/使用说明书-Mac版.md` | 零代码经验用户手册（macOS/Linux） |
 | `docs/Cherry-Studio配置说明.md` | Cherry Studio 连接桥的详细图文配置（零改动法 + OpenAI 添加法） |
-| `docs/部署手册-中文版.md` | AI 自助施工部署手册（人工 5 步 + AI 施工 7 项，含进度卡机制） |
+| `docs/部署手册-中文版.md` | **一键呆瓜部署手册**（Windows：双击入口 → 输密钥 → dsh 自动接管施工） |
 | `tools/check-env.bat` / `tools/check-env.ps1` | 一键环境体检（Git/Node/VC++/WebView2/代理/网络），缺失项自动 winget 安装 |
 | `tools/check-bridge.bat` / `tools/check-bridge.ps1` | 三层自检（桥进程 → 模型列表 → 真实对话），双击 bat 即可 |
 | `tools/repair-links.ps1` | 修复 18 个运行时插件链接（junction 重建，解决对话 500 / 插件树加载失败） |
