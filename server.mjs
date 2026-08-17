@@ -31,8 +31,9 @@
 import http from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 /* ------------------------------------------------------------------ */
 /* 简易 .env 加载（同目录 .env；已存在的环境变量优先，不覆盖）            */
