@@ -356,6 +356,10 @@ node smoke-test.mjs --model deepseek-v4-flash   # 指定模型（默认读 DSH_B
 - **星星也追不上我**：首台异地真机部署测试（2026-08-17）。在无 Git、缺 VC++ 运行库、系统代理拦截本地端口等真实环境下完成全流程部署，为手册与故障排查表贡献了大量实战案例。
 - **@fox**：第二台异地真机部署测试（2026-08-17）。在非中文控制台环境（UTF-8 Beta 模式）下全流程测试，贡献了字体编码、插件链接、构建脚本、密钥输入等十余处实战修复，推动交付包从 v1 迭代到 v2 呆瓜版。
 
+### 🌐 社区
+
+- DeepSeek 官方社区（deepseek-harness Discussions）介绍帖：https://github.com/deepseek-ai/deepseek-harness/discussions/2843
+
 ### 已知限制 / Roadmap
 
 - dsh 官方 SDK 暂不支持外部工具调度/审批流，因此 Chatbox「工作模式」的原生工具调用界面
