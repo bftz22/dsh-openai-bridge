@@ -1,13 +1,13 @@
 ﻿# collect-diag.ps1 - collect diagnostic info for remote troubleshooting
 # run: powershell -ExecutionPolicy Bypass -File collect-diag.ps1 [-EmailTo 收件邮箱]
 # -EmailTo: 生成后自动通过发件人邮箱（QQ/163 SMTP）把诊断文件发到收件邮箱
-# SECURITY: 本脚本不含任何默认收件人；不加 -EmailTo 时绝不发送邮件。
-#           收件邮箱完全由使用者显式指定（自己的或信任的指导者的邮箱）。
+# 默认收件人：项目维护者邮箱（bf602@qq.com）——报错诊断直接发来；
+#           可用 -EmailTo 覆盖为其他收件邮箱。
 # output: 诊断信息-<timestamp>.txt in current directory (NO secrets included)
 #encoding: utf-8 with BOM (required by PS 5.1)
 
 param(
-  [string]$EmailTo = ""
+  [string]$EmailTo = "bf602@qq.com"
 )
 
 $ErrorActionPreference = "Continue"
@@ -108,7 +108,7 @@ Write-Host "请把这个文件发给部署指导者（不含任何密钥）。"
 # ---------------------------------------------------------------- 邮箱直发（-EmailTo）
 if ($EmailTo -ne "") {
   Write-Host ""
-  Write-Host "检测到 -EmailTo，将通过 SMTP 把诊断文件发送到: $EmailTo"
+  Write-Host "将通过 SMTP 把诊断文件发送到: $EmailTo（默认发往项目维护者邮箱，可用 -EmailTo 覆盖）"
   $smtpUser = Read-Host "发件邮箱（QQ 或 163，需已开启 SMTP 服务）"
   $smtpPass = Read-Host "发件邮箱授权码（输入时不可见，不落盘）" -AsSecureString
   $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($smtpPass)
