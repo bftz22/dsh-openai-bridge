@@ -51,23 +51,57 @@ if (existsSync(ENV_FILE)) {
 }
 
 /* ------------------------------------------------------------------ */
-/* dsh SDK 加载：优先 npm 包名；在 dsh 仓库根目录运行时自动 fallback     */
-/* 到本地 workspace 构建产物（install 脚本采用后一种部署方式）            */
+/* dsh SDK 加载：依次尝试 ① npm 包名 ② DSH_REPO_DIR 显式指定的仓库      */
+/* ③ 当前目录（仓库根，install 脚本部署方式，本机构建产物）。全部失败    */
+/* 时输出带可执行指引的报错（含常见仓库路径检测），避免裸模块错误。      */
 /* ------------------------------------------------------------------ */
 
 let DeepSeekHarness
+const sdkLoadErrors = []
 
-try {
-  ;({ DeepSeekHarness } = await import('@deepseek-ai/dsh-sdk-client'))
-} catch {
+async function tryImportSdk (spec) {
   try {
-    ;({ DeepSeekHarness } = await import('./packages/sdk/client/lib/index.js'))
+    const mod = await import(spec)
+    return mod?.DeepSeekHarness ?? null
   } catch (err) {
-    console.error('[dsh-openai-bridge] 无法加载 @deepseek-ai/dsh-sdk-client：')
-    console.error('  请确认：① 在 dsh 仓库根目录运行（推荐，自动使用本地 SDK）；')
-    console.error('          ② 或在独立目录运行前已执行 npm install。')
-    throw err
+    sdkLoadErrors.push({ spec, message: (err.message || String(err)).split('\n')[0] })
+    return null
   }
+}
+
+// ① npm 包名（独立部署 + 已 npm install 的场景）
+DeepSeekHarness = await tryImportSdk('@deepseek-ai/dsh-sdk-client')
+
+// ② DSH_REPO_DIR 环境变量显式指定 dsh 仓库根目录（迁移/独立部署场景）
+if (!DeepSeekHarness && process.env.DSH_REPO_DIR) {
+  DeepSeekHarness = await tryImportSdk(pathToFileURL(join(process.env.DSH_REPO_DIR, 'packages/sdk/client/lib/index.js')).href)
+}
+
+// ③ 当前目录即 dsh 仓库根（本机构建产物）
+if (!DeepSeekHarness) {
+  DeepSeekHarness = await tryImportSdk(pathToFileURL(join(BRIDGE_DIR, 'packages/sdk/client/lib/index.js')).href)
+}
+
+if (!DeepSeekHarness) {
+  console.error('[dsh-openai-bridge] 无法加载 @deepseek-ai/dsh-sdk-client（SDK 缺失或路径不可达）：')
+  const hints = []
+  if (process.env.DSH_REPO_DIR) {
+    hints.push(`  - 已设置 DSH_REPO_DIR=${process.env.DSH_REPO_DIR}，但该路径下没有 packages/sdk/client/lib/index.js，请检查目录是否正确`)
+  }
+  const homeRepo = join(homedir(), 'deepseek-harness')
+  if (existsSync(join(homeRepo, 'packages/sdk/client/lib/index.js'))) {
+    hints.push(`  - 检测到本机仓库 ${homeRepo} 存在 SDK 产物：请把桥部署到该目录运行，或设置 DSH_REPO_DIR=${homeRepo}`)
+  }
+  if (hints.length === 0) {
+    hints.push('  - 未检测到本地仓库 SDK 产物；常见仓库路径：~\\deepseek-harness\\packages\\sdk\\client\\lib\\index.js')
+  }
+  hints.forEach(h => console.error(h))
+  console.error('  自助修复（任选其一）：')
+  console.error('    ① 把桥部署文件放入 dsh 仓库根目录运行（推荐，自动命中本地 SDK）')
+  console.error('    ② 设置环境变量 DSH_REPO_DIR=<dsh 仓库根目录> 后重启桥')
+  console.error('    ③ 使用 npm 包方式：在桥目录执行 npm install（或 pnpm add -w @deepseek-ai/dsh-sdk-client）')
+  console.error('  最近一次模块加载错误：', sdkLoadErrors[sdkLoadErrors.length - 1]?.message ?? '(无)')
+  process.exit(1)
 }
 
 /* ------------------------------------------------------------------ */
