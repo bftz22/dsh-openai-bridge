@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 卸载桥的后台服务（计划任务）。不会删除仓库文件。
 用法：.\uninstall-service.ps1

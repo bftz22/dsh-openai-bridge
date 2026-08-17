@@ -1,4 +1,4 @@
-# repair-links.ps1
+﻿# repair-links.ps1
 # Rebuilds the 18 @deepseek-ai/dsh-* workspace junctions under
 # %USERPROFILE%\deepseek-harness\node_modules\@deepseek-ai
 # Fixes bridge error: "plugin tree failed to load ... loader entries failed to apply"
