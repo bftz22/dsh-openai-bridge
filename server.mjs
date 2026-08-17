@@ -108,11 +108,34 @@ const CONTEXT_LIMIT = Number(process.env.DSH_BRIDGE_CONTEXT_LIMIT ?? 1_048_576)
 // 下一轮请求前自动重置会话，避免历史累积到超限（dsh 自带压缩常因 token
 // 统计口径不一致而拦不住，故在桥接层做兜底）。0~1 之间。
 const CONTEXT_RESET_RATIO = Number(process.env.DSH_BRIDGE_CONTEXT_RESET_RATIO ?? 0.72)
-// 图片静态服务：把图片输出目录挂到 http://127.0.0.1:PORT/output/<文件名>，
+// 请求超时自动恢复（2026-08-16 新增，根除“运行时死亡请求永不返回”的卡死）：
+// dsh 运行时（bin.js）可能在请求处理中途死亡，此时 harness.run() 永不返回也
+// 不报错（无“回合结束”），客户端表现为永久转圈。本机制：
+//   - 监控请求的实际输出活动：超过 REQUEST_TIMEOUT_MS（默认 5 分钟）没有任何
+//     内容流出 → 触发检查；
+//   - 检查运行时子进程是否还活着：
+//       已死（child.exitCode != null / 无 child / spawn 失败）→ 判定卡死 →
+//       关闭全部运行时（下次请求自动拉起全新运行时，会话代际+1 避开旧存档）
+//       并向客户端返回明确错误，不再挂起；
+//       还活着 → 判定为健康的长任务（工具执行期间无输出属正常，如批量出图/
+//       文件扫描），继续等待；但超过 REQUEST_HARD_TIMEOUT_MS（默认 30 分钟）
+//       仍无输出则强制恢复（防“进程活着但已卡死”的场景）。
+//   两个值均可经环境变量覆盖，设为 0 = 关闭对应保护。
+const REQUEST_TIMEOUT_MS = Number(process.env.DSH_BRIDGE_REQUEST_TIMEOUT_MS ?? 5 * 60 * 1000)
+const REQUEST_HARD_TIMEOUT_MS = Number(process.env.DSH_BRIDGE_REQUEST_HARD_TIMEOUT_MS ?? 30 * 60 * 1000)
+// 长任务进度心跳（2026-08-17 新增，让长任务"可见"）：流式请求在长时间没有文本
+// 输出（如工具执行中、批量出图、文件扫描）时，周期性向 SSE 流发送进度提示
+// （⏳ 任务处理中…已 N 秒，正在调用工具 X），避免 Chatbox 界面长时间无输出被
+// 误判为卡死。关键设计：心跳仅在运行时子进程仍存活时发送——真正的卡死（运行时
+// 已死）保持静默，请求超时恢复机制（runWithRequestTimeout）的判定不受影响；
+// 心跳本身是输出活动，也会顺延"无输出超时"计时，健康长任务不再被误判。
+// DSH_BRIDGE_HEARTBEAT_MS=0 可关闭；IDLE 阈值=连续无文本输出多久后开始心跳。
+const HEARTBEAT_MS = Number(process.env.DSH_BRIDGE_HEARTBEAT_MS ?? 25 * 1000)
+const HEARTBEAT_IDLE_MS = Number(process.env.DSH_BRIDGE_HEARTBEAT_IDLE_MS ?? 20 * 1000)
+// 图片静态服务：把 ComfyUI 输出目录挂到 http://127.0.0.1:PORT/output/<文件名>，
 // 让 agent 在回复里用 markdown 图片链接展示生成结果（Chatbox 可直接渲染），
 // 避免把图片 base64 塞进对话上下文导致超限。
-// 默认相对当前工作目录的 output/（即运行时仓库根/output），可用环境变量覆盖。
-const IMAGE_OUTPUT_DIR = process.env.DSH_BRIDGE_OUTPUT_DIR ?? 'output'
+const IMAGE_OUTPUT_DIR = process.env.DSH_BRIDGE_OUTPUT_DIR ?? 'F:\\ComfyUI-aki-v3.2\\ComfyUI\\output'
 
 if (!process.env.DEEPSEEK_API_KEY) {
   console.warn('[dsh-openai-bridge] 警告：未设置 DEEPSEEK_API_KEY，运行时将无法调用模型。')
@@ -247,28 +270,49 @@ function withThreadLock(thread, fn) {
  */
 function pruneSessions() {
   if (!Number.isFinite(MAX_SESSIONS) || MAX_SESSIONS < 1) return 0
-  let entries
-  try {
-    entries = readdirSync(SESSION_DIR, { withFileTypes: true })
-  } catch {
-    return 0 // 目录不存在/不可读，无需清理
+
+  // 收集"会话目录"（直接含文件的目录）：兼容一层平铺（.sessions\<会话>）
+  // 与两层结构（.sessions\<hash>\<会话>）；纯容器目录（hash 根等）不参与治理、不会被删
+  const dirs = []
+  const collect = (dir) => {
+    let entries
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return // 目录不存在/不可读，跳过
+    }
+    if (entries.some((e) => !e.isDirectory())) {
+      dirs.push(dir) // 直接含文件 = 会话目录，参与治理
+      return
+    }
+    for (const e of entries) {
+      if (e.isDirectory()) collect(join(dir, e.name))
+    }
   }
-  const dirs = entries
-    .filter((e) => e.isDirectory())
-    .map((e) => {
-      const p = join(SESSION_DIR, e.name)
-      let mtime = 0
-      try {
-        mtime = statSync(p).mtimeMs
-      } catch {
-        /* 忽略无法 stat 的目录 */
+  collect(SESSION_DIR)
+
+  // 活动时间 = max(目录 mtime, 目录内所有后代文件 mtime)
+  // （快照覆盖写入只刷新文件 mtime、不刷新目录 mtime，仅看目录 mtime 会误判旧）
+  const activityOf = (p) => {
+    let t = 0
+    try { t = Math.max(t, statSync(p).mtimeMs) } catch { /* 忽略 */ }
+    try {
+      for (const f of readdirSync(p, { withFileTypes: true })) {
+        const fp = join(p, f.name)
+        try {
+          t = f.isDirectory() ? Math.max(t, activityOf(fp)) : Math.max(t, statSync(fp).mtimeMs)
+        } catch { /* 忽略无法 stat 的条目 */ }
       }
-      return { p, mtime }
-    })
+    } catch { /* 忽略 */ }
+    return t
+  }
+
+  const scored = dirs
+    .map((p) => ({ p, mtime: activityOf(p) }))
     .sort((a, b) => b.mtime - a.mtime)
 
   let removed = 0
-  for (const d of dirs.slice(MAX_SESSIONS)) {
+  for (const d of scored.slice(MAX_SESSIONS)) {
     try {
       rmSync(d.p, { recursive: true, force: true })
       removed++
@@ -513,6 +557,101 @@ function extractText(content) {
 /* 聊天补全核心逻辑                                                     */
 /* ------------------------------------------------------------------ */
 
+/** 运行时进程存活探测：true=子进程还活着（健康长任务）；false=已死/未启动（卡死）。 */
+function runtimeProcessAlive(harness) {
+  try {
+    const client = harness?.client
+    const child = client?.child
+    if (!child) return false // 从未成功启动（spawn 失败或尚未拉起）
+    return child.exitCode === null && child.signalCode === null && !client.spawnError
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 请求超时自动恢复（2026-08-16 新增）：见 REQUEST_TIMEOUT_MS 注释。
+ *  - 监测 res 输出活动：只要流里持续有内容写出，就视为请求健康推进，不超时；
+ *  - 超时后先探测运行时进程：已死 → 关闭全部运行时（代际+1，新会话避开旧存档）
+ *    并返回 { settled:false, error } 由调用方给客户端报错；还活着 → 视为长任务
+ *    继续等待，直到超过硬上限；
+ *  - fn() 正常完成/报错 → 原样返回结果（settled=true）。
+ * @returns {Promise<{settled: boolean, result: *, error: Error|null}>}
+ */
+async function runWithRequestTimeout(ms, hardMs, fn, res, harness) {
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return { settled: true, result: await fn(), error: null }
+  }
+  const hardLimit = hardMs > 0 ? hardMs : Infinity
+  const origWrite = res.write.bind(res)
+  let lastActivity = Date.now()
+  res.write = (chunk, ...rest) => {
+    lastActivity = Date.now()
+    return origWrite(chunk, ...rest)
+  }
+  try {
+    return await new Promise((resolve) => {
+      let done = false
+      const finish = (settled, result, error) => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        resolve({ settled, result, error })
+      }
+      const startedAt = Date.now()
+      let timer
+      const check = () => {
+        if (done) return
+        const idle = Date.now() - lastActivity
+        if (idle < ms) {
+          // 还有输出活动，按剩余时间顺延（不重置硬上限计时）
+          timer = setTimeout(check, ms - idle)
+          return
+        }
+        const elapsed = Date.now() - startedAt
+        if (runtimeProcessAlive(harness) && elapsed < hardLimit) {
+          // 运行时进程还活着：大概率是健康的长任务（工具执行期间无输出属正常）
+          console.warn(`[bridge] 请求已 ${Math.round(elapsed / 1000)} 秒无输出，但运行时进程仍存活，判定为长任务，继续等待（超过 ${Math.round(hardLimit / 1000)} 秒将强制恢复）`)
+          timer = setTimeout(check, ms)
+          return
+        }
+        // 运行时已死（或超过硬上限仍无输出）→ 判定卡死，自动恢复
+        const reason = runtimeProcessAlive(harness) ? '超过硬上限仍无输出' : '运行时已死亡'
+        console.error(`[bridge] 请求超时：${Math.round(elapsed / 1000)} 秒无输出（${reason}），自动恢复中…`)
+        closeAllHarnesses().catch((e) => console.error('[bridge] 超时关闭运行时失败:', e))
+        finish(false, null, new Error(
+          `请求超时（${Math.round(elapsed / 1000)} 秒无响应，${reason}），已自动关闭并重置运行时；请重试（重启后首个请求冷启动 30~60 秒属正常）`,
+        ))
+      }
+      timer = setTimeout(check, ms)
+      fn().then(
+        (result) => finish(true, result, null),
+        (error) => finish(true, null, error),
+      )
+    })
+  } finally {
+    res.write = origWrite
+  }
+}
+
+/** 运行时卡死超时：向客户端返回明确错误（保证请求一定有结果，不再永久挂起）。 */
+function respondTimeout(res, model, stream, error) {
+  const msg = error?.message ?? '请求超时，运行时已自动恢复，请重试（重启后首个请求冷启动 30~60 秒属正常）'
+  if (stream) {
+    if (!res.writableEnded) {
+      try {
+        writeSseDelta(res, model, `\n\n[错误] ${msg}`)
+        writeSseEnd(res, model, null, 'stop')
+        res.end()
+      } catch {
+        /* 客户端已断开 */
+      }
+    }
+  } else if (!res.headersSent) {
+    sendError(res, 504, msg, 'dsh_request_timeout')
+  }
+}
+
 async function handleChatCompletion(req, res) {
   let body
   try {
@@ -596,6 +735,7 @@ async function handleChatCompletion(req, res) {
       '其余消息会直接交给 dsh Agent 执行（可调用 bash / 文件系统 / 子代理等工具）。',
       `上下文保护：上一轮输入达到模型上限(${CONTEXT_LIMIT.toLocaleString()} tokens)的 ${Math.round(CONTEXT_RESET_RATIO * 100)}% 时会自动重置会话；`,
       '请求因上下文超限失败时也会自动重置会话并重试一次。',
+      `请求超时恢复：请求 ${Math.round(REQUEST_TIMEOUT_MS / 1000)} 秒无输出且运行时已死时自动关闭并重置运行时（${REQUEST_HARD_TIMEOUT_MS > 0 ? `超过 ${Math.round(REQUEST_HARD_TIMEOUT_MS / 1000)} 秒强制恢复` : '无硬上限'}；DSH_BRIDGE_REQUEST_TIMEOUT_MS=0 关闭）。`,
       '系统提示词：首次请求携带 system 消息时会自动应用（并触发一次运行时重建）。',
     ].join('\n')
     if (stream) {
@@ -628,15 +768,28 @@ async function handleChatCompletion(req, res) {
       resetThread(threadKey)
     }
 
-    // 执行一次回合；若返回 overflow=true 表示上下文超限（需要重置会话后重试）
+    // 执行一次回合；若返回 overflow=true 表示上下文超限（需要重置会话后重试）；
+    // timedOut=true 表示运行时卡死超时（已自动恢复，直接向客户端返回明确错误）
     const attempt = async (sid, notice) => {
       if (stream) {
         if (notice) writeSseDelta(res, model, notice)
-        const r = await runStreaming(harness, sid, prompt, model, res, thread)
-        return r.overflow ? { overflow: true, error: r.error } : { overflow: false }
+        const { settled, result, error } = await runWithRequestTimeout(
+          REQUEST_TIMEOUT_MS, REQUEST_HARD_TIMEOUT_MS,
+          () => runStreaming(harness, sid, prompt, model, res, thread),
+          res, harness,
+        )
+        if (!settled) return { timedOut: true, error }
+        if (error) throw error
+        return result.overflow ? { overflow: true, error: result.error } : { overflow: false }
       }
       try {
-        await runNonStreaming(harness, sid, prompt, model, res, thread)
+        const { settled, result, error } = await runWithRequestTimeout(
+          REQUEST_TIMEOUT_MS, REQUEST_HARD_TIMEOUT_MS,
+          () => runNonStreaming(harness, sid, prompt, model, res, thread),
+          res, harness,
+        )
+        if (!settled) return { timedOut: true, error }
+        if (error) throw error
         return { overflow: false }
       } catch (err) {
         if (isContextOverflow(err)) return { overflow: true, error: err }
@@ -648,11 +801,24 @@ async function handleChatCompletion(req, res) {
 
     try {
       let outcome = await attempt(sessionIdOf(threadKey, thread))
+      if (outcome.timedOut) {
+        // 运行时卡死超时：已自动关闭全部运行时（下次请求自动拉起全新的），
+        // 向客户端返回明确错误，保证请求一定有结果（不再永久挂起）
+        console.error('[bridge] 请求超时恢复完成：已关闭运行时，向客户端返回错误（下次请求冷启动 30~60 秒属正常）')
+        respondTimeout(res, model, stream, outcome.error)
+        return
+      }
       if (outcome.overflow) {
         // 自愈：上下文超限 → 自动重置会话 → 用同一消息重试一次
         console.log('[bridge] 上下文超限，已自动重置会话并重试一次')
         resetThread(threadKey)
         outcome = await attempt(sessionIdOf(threadKey, thread), '\n\n（上下文已超限，已自动重置会话，正在重试…）\n\n')
+        if (outcome.timedOut) {
+          // 重试过程中运行时卡死：同样返回明确错误，不挂起
+          console.error('[bridge] 重试过程请求超时：已关闭运行时，向客户端返回错误')
+          respondTimeout(res, model, stream, outcome.error)
+          return
+        }
         if (outcome.overflow) {
           // 重试仍超限（例如用户单条消息本身就超过上限）
           console.error('[bridge] 重置会话后重试仍超限:', outcome.error)
@@ -918,10 +1084,31 @@ async function runStreaming(harness, sessionId, prompt, model, res, thread) {
   let overflow = false
   let overflowError = null
   const toolStats = newToolStats()
+  // —— 长任务进度心跳（2026-08-17 新增）——
+  const heartbeatStartedAt = Date.now()   // 回合开始时刻（进度文本用）
+  let heartbeatTimer = null               // 心跳定时器
+  let lastTextAt = Date.now()             // 最近一次真正输出文本的时刻
+  let lastToolName = ''                   // 最近一次工具调用名
+  let lastToolCount = 0                   // 已完成的工具调用数
+  const stopHeartbeat = () => { if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null } }
+  const startHeartbeat = () => {
+    if (HEARTBEAT_MS <= 0 || ended) return
+    heartbeatTimer = setInterval(() => {
+      if (ended) return
+      const idle = Date.now() - lastTextAt
+      if (idle < HEARTBEAT_IDLE_MS) return        // 还在正常输出，无需心跳
+      if (!runtimeProcessAlive(harness)) return   // 运行时已死 → 保持静默，交给超时恢复机制
+      const elapsed = Math.round((Date.now() - heartbeatStartedAt) / 1000)
+      const tool = lastToolName ? `，正在调用 ${lastToolName}${lastToolCount ? `（已完成 ${lastToolCount} 次）` : ''}` : ''
+      const line = `\n\n⏳ 任务处理中…已 ${elapsed} 秒${tool}，仍在继续，请稍候\n\n`
+      try { writeSseDelta(res, model, line) } catch { /* 客户端已断开 */ }
+    }, HEARTBEAT_MS)
+  }
 
   const finish = () => {
     if (ended) return
     ended = true
+    stopHeartbeat()
     try {
       writeSseEnd(res, model, usage, finishReason)
       res.end()
@@ -931,6 +1118,7 @@ async function runStreaming(harness, sessionId, prompt, model, res, thread) {
   }
 
   try {
+    startHeartbeat()
     await harness.run(prompt, {
       sessionId,
       onNotification: (n) => {
@@ -944,6 +1132,7 @@ async function runStreaming(harness, sessionId, prompt, model, res, thread) {
           const text = data.chunk.text ?? ''
           if (text) {
             finalText += text
+            lastTextAt = Date.now()
             writeSseDelta(res, model, text)
           }
         } else if (ev.type === 'assistant/chunk' && data.chunk?.type === 'reasoning-delta') {
@@ -967,6 +1156,7 @@ async function runStreaming(harness, sessionId, prompt, model, res, thread) {
         } else if (SHOW_TOOLS && ev.type === 'tool/call') {
           if (DEBUG) console.log(`[bridge]   工具调用: ${data.name} 参数=${JSON.stringify(data.arguments?.slice(0, 80))}`)
           noteToolCall(toolStats, data)
+          lastToolName = data.name ?? '工具'
           if (!TOOLS_SUMMARY) {
             const line = toolCallLine(data)
             if (line) writeSseDelta(res, model, `\n\n${line}\n\n`)
@@ -974,6 +1164,7 @@ async function runStreaming(harness, sessionId, prompt, model, res, thread) {
         } else if (SHOW_TOOLS && ev.type === 'tool/result') {
           if (DEBUG) console.log(`[bridge]   工具结果: ${data.error ? '错误' : '成功'} ${JSON.stringify(toolResultText(data.message).slice(0, 80))}`)
           noteToolResult(toolStats, data)
+          lastToolCount = toolStats.count
           if (!TOOLS_SUMMARY) {
             const line = toolResultLine(data)
             if (line) writeSseDelta(res, model, `\n\n${line}\n\n`)
@@ -1025,6 +1216,7 @@ async function runStreaming(harness, sessionId, prompt, model, res, thread) {
       }
     }
   } finally {
+    stopHeartbeat()
     console.log(`[bridge] 回合结束 流式=${true} 最终文本=${finalText.length}字 结束原因=${finishReason} 输入tokens=${thread.lastInputTokens}${overflow ? '（上下文超限）' : ''}`)
     // 超限时保持流打开，等待上层重置会话后重试；其余情况正常收尾
     if (!overflow) {
@@ -1090,6 +1282,7 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`  推理透传        : ${SHOW_REASONING ? '开（reasoning_content）' : '关（DSH_BRIDGE_SHOW_REASONING=1 开启）'}`)
   console.log(`  会话存档保留    : 最新 ${MAX_SESSIONS} 个（目录=${SESSION_DIR}）`)
   console.log(`  上下文保护      : 上限 ${CONTEXT_LIMIT.toLocaleString()} tokens，超 ${Math.round(CONTEXT_RESET_RATIO * 100)}% 自动重置会话；超限请求自动重置并重试`)
+  console.log(`  请求超时恢复    : ${REQUEST_TIMEOUT_MS > 0 ? `${Math.round(REQUEST_TIMEOUT_MS / 1000)} 秒无输出且运行时已死自动恢复${REQUEST_HARD_TIMEOUT_MS > 0 ? `（硬上限 ${Math.round(REQUEST_HARD_TIMEOUT_MS / 1000)} 秒）` : '（无硬上限）'}（DSH_BRIDGE_REQUEST_TIMEOUT_MS）` : '关（DSH_BRIDGE_REQUEST_TIMEOUT_MS=0）'}`)
   console.log(`  图片服务        : http://127.0.0.1:${PORT}/output/<文件名>（目录=${IMAGE_OUTPUT_DIR}）`)
   console.log('')
   console.log('  Chatbox 配置：设置 → 模型提供方 → 添加自定义 OpenAI 兼容')
@@ -1106,4 +1299,10 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
     server.close(() => process.exit(0))
     setTimeout(() => process.exit(0), 3000).unref()
   })
+}
+
+/* 测试钩子（仅 DSH_BRIDGE_TEST_HOOKS=1 时暴露，供回归测试脚本引用内部函数；
+   生产运行不设置该变量，此块不产生任何副作用） */
+if (process.env.DSH_BRIDGE_TEST_HOOKS === '1') {
+  globalThis.__bridgeTest = { runWithRequestTimeout, runtimeProcessAlive, closeAllHarnesses, pruneSessions }
 }

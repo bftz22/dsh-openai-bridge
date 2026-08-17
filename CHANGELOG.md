@@ -10,6 +10,8 @@
 - **Cherry Studio 官方支持**：README 客户端配置章节拆分为「Chatbox / Cherry Studio 二选一」（Cherry 已在 2.0.5 真实界面验证）；新增 `docs/Cherry-Studio配置说明.md`（零改动法 + OpenAI 添加法 + 常见问题）
 - **诊断工具开源**：新增 `tools/` 目录——`check-env.bat` / `check-env.ps1`（一键环境体检：Git/Node/VC++/WebView2/代理，缺失项自动 winget 安装）、`check-bridge.bat` / `check-bridge.ps1`（三层自检：桥进程 → 模型列表 → 真实对话）、`repair-links.ps1`（修复 18 个运行时插件链接，解决对话 500 / 插件树加载失败）
 - **部署手册全面升级**：`docs/部署手册-中文版.md` 新增施工地图、5 步完成标志、AI 施工进度卡机制（进度播报 + 桌面 `施工进度.md`）、Git 前置安装、常见报错对照表（git 缺失 / VC++ 运行库 / 插件链接 / 代理拦截 / 401）
+- **长任务心跳机制**：`server.mjs` 流式响应新增心跳增量（长任务执行期间定时输出，客户端不再显示"无响应"）；同步补全请求超时自动恢复机制（运行时死亡请求永不挂起的根除方案）
+- **新运维工具**：`tools/token-stats.ps1`（从 bridge.log 解析 token 用量统计：回合数 / 输入合计 / 会话 TOP / 费用估算）、`tools/verify-heartbeat.mjs`（心跳回归验证脚本，真实请求长任务并观测 SSE 心跳流）
 
 ### 文档
 
