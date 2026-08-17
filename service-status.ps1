@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 查看桥服务状态（计划任务 + healthz 健康检查）。
 用法：.\service-status.ps1

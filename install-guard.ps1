@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 安装「危险命令拦截闸」：编译 guard.cs → guard.exe，并把 DSH_PWSH_GUARD 写入 .env。
 之后管家的每条 pwsh 命令都会先经过 guard 检查，危险命令（杀进程/关机/删系统路径等）被直接拒绝。

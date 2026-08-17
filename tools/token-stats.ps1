@@ -1,4 +1,4 @@
-# token-stats.ps1 - 桥 token 用量统计（从 bridge.log 解析）
+﻿# token-stats.ps1 - 桥 token 用量统计（从 bridge.log 解析）
 # 用法: powershell -File token-stats.ps1 [-Days 7]
 # 输出: 回合数 / 输入tokens合计 / 按天分布 / 按会话TOP / 超限次数 / 费用估算
 param([int]$Days = 7)

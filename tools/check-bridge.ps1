@@ -1,4 +1,4 @@
-# check-bridge.ps1 - AI bridge one-click self-check (3 layers)
+﻿# check-bridge.ps1 - AI bridge one-click self-check (3 layers)
 # Recommended: double-click check-bridge.bat in the same folder (window stays open)
 # or run: powershell -ExecutionPolicy Bypass -File .\check-bridge.ps1
 # Layer 1: bridge process (healthz) / Layer 2: model list / Layer 3: real chat round-trip
