@@ -135,7 +135,7 @@ const HEARTBEAT_IDLE_MS = Number(process.env.DSH_BRIDGE_HEARTBEAT_IDLE_MS ?? 20 
 // 图片静态服务：把 ComfyUI 输出目录挂到 http://127.0.0.1:PORT/output/<文件名>，
 // 让 agent 在回复里用 markdown 图片链接展示生成结果（Chatbox 可直接渲染），
 // 避免把图片 base64 塞进对话上下文导致超限。
-const IMAGE_OUTPUT_DIR = process.env.DSH_BRIDGE_OUTPUT_DIR ?? 'F:\\ComfyUI-aki-v3.2\\ComfyUI\\output'
+const IMAGE_OUTPUT_DIR = process.env.DSH_BRIDGE_OUTPUT_DIR ?? join(process.env.USERPROFILE ?? process.env.HOME ?? '', 'ComfyUI', 'ComfyUI', 'output')
 
 if (!process.env.DEEPSEEK_API_KEY) {
   console.warn('[dsh-openai-bridge] 警告：未设置 DEEPSEEK_API_KEY，运行时将无法调用模型。')
@@ -540,7 +540,7 @@ function extractText(content) {
             parts.push(
               `\n[系统] 用户随消息附带了一张图片，已保存至 ${saved}。` +
               `如需要查看，请调用视觉技能查看：` +
-              `powershell -File C:\\Users\\Administrator\\deepseek-harness\\skills\\vision\\vision-ask.ps1 -Image "${saved}" -Question "描述这张图片的内容"`
+              `powershell -File ${join(import.meta.dirname, 'skills', 'vision', 'vision-ask.ps1')} -Image "${saved}" -Question "描述这张图片的内容"`
             )
           } else {
             parts.push('\n[系统] 用户附带了图片，但未能保存（非 data 协议或解析失败）')
