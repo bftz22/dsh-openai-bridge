@@ -24,3 +24,6 @@ build/
 .idea/
 .DS_Store
 Thumbs.db
+
+github-sync.ps1
+github-sync-loop.vbs
