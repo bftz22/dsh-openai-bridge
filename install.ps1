@@ -1,4 +1,4 @@
-﻿#requires -Version 5.1
+#requires -Version 5.1
 <#
 .SYNOPSIS
   dsh-openai-bridge 一键安装脚本（Windows / PowerShell）
@@ -169,11 +169,25 @@ if (-not (Test-Path $RepoDir)) {
     exit 1
   }
 } else {
-  Write-Info "仓库已存在，尝试拉取更新 …"
-  Push-Location $RepoDir
-  git pull --ff-only 2>$null
-  if ($LASTEXITCODE -ne 0) { Write-Warn2 "拉取更新失败（忽略，继续使用现有代码）" }
-  Pop-Location
+  # 已存在：判断是否为 git 仓库——zip 解压安装（小白交付包）得到的目录不是 git 仓库，
+  # 此时跳过 git pull 直接使用现有文件；git clone 安装的目录则拉取更新
+  $isGitRepo = $false
+  try {
+    Push-Location $RepoDir
+    $null = git rev-parse --is-inside-work-tree 2>$null
+    if ($LASTEXITCODE -eq 0) { $isGitRepo = $true }
+    Pop-Location
+  } catch { Pop-Location }
+  if ($isGitRepo) {
+    Write-Info "仓库已存在，尝试拉取更新 …"
+    try {
+      Push-Location $RepoDir
+      git pull --ff-only 2>$null
+      Pop-Location
+    } catch { Pop-Location; Write-Warn2 "拉取更新失败（忽略，继续使用现有代码）" }
+  } else {
+    Write-Info "目录已存在（非 git 仓库，跳过更新，直接使用现有文件）…"
+  }
 }
 if (-not (Test-Path (Join-Path $RepoDir "pnpm-workspace.yaml"))) {
   Write-Fail "目录 $RepoDir 不是有效的 deepseek-harness 仓库，请换一个目录或用 -RepoDir 指定。"
