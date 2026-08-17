@@ -211,9 +211,21 @@ Push-Location $RepoDir
 & $pnpmExec install
 if ($LASTEXITCODE -ne 0) { Write-Fail "pnpm install 失败"; Pop-Location; exit 1 }
 if (-not $SkipBuild) {
-  Write-Info "构建中 …"
-  if ($FullBuild) { & $pnpmExec run build } else { & $pnpmExec run build:lib }
-  if ($LASTEXITCODE -ne 0) { Write-Fail "构建失败"; Pop-Location; exit 1 }
+  # 新版 harness 已内置构建产物（packages/*/lib），且 package.json 可能没有 build 脚本；
+  # 仅当存在可用构建脚本时才构建，否则跳过（避免 ERR_PNPM_NO_SCRIPT 误报失败）
+  $buildScript = $null
+  try {
+    $pkg = Get-Content (Join-Path $RepoDir 'package.json') -Raw | ConvertFrom-Json
+    if ($pkg.scripts.'build:lib') { $buildScript = 'build:lib' }
+    elseif ($pkg.scripts.build) { $buildScript = 'build' }
+  } catch {}
+  if ($buildScript) {
+    Write-Info "构建中（$buildScript）…"
+    if ($FullBuild) { & $pnpmExec run build } else { & $pnpmExec run $buildScript }
+    if ($LASTEXITCODE -ne 0) { Write-Fail "构建失败"; Pop-Location; exit 1 }
+  } else {
+    Write-Info "package.json 无 build 脚本（新版 harness 内置构建产物），跳过构建"
+  }
 }
 # 链接运行时插件：cordis 配置从仓库根解析 @deepseek-ai/dsh-* 插件，
 # pnpm 默认不会把 workspace 包链接到根 node_modules，必须显式加到根依赖
