@@ -243,15 +243,22 @@ $pluginList = @(
 )
 # 插件链接必须成功：失败会导致 dsh 启动报 ERR_MODULE_NOT_FOUND（网络抖动时重试最多 3 次）
 $pluginsLinked = $false
+$probe = Join-Path $RepoDir 'node_modules\@deepseek-ai\dsh-llm-deepseek'
 for ($attempt = 1; $attempt -le 3; $attempt++) {
   Write-Info "链接运行时插件（第 $attempt/3 次尝试）…"
   & $pnpmExec add -w $pluginList
   if ($LASTEXITCODE -eq 0) {
     # 验证关键插件已出现在根 node_modules
-    $probe = Join-Path $RepoDir 'node_modules\@deepseek-ai\dsh-llm-deepseek'
     if (Test-Path $probe) { $pluginsLinked = $true; break }
     Write-Warn2 "插件目录未出现，重试 …"
   } else {
+    # pnpm add 失败时：插件可能已被上一步 pnpm install 以 workspace 方式链接，
+    # 此时直接视为成功（pnpm add 仅用于固化根依赖声明）
+    if (Test-Path $probe) {
+      Write-Warn2 "pnpm add 退出码 $LASTEXITCODE，但插件已存在于 node_modules（pnpm install 已链接），继续"
+      $pluginsLinked = $true
+      break
+    }
     Write-Warn2 "pnpm add 退出码 $LASTEXITCODE，重试 …"
   }
   Start-Sleep -Seconds 3
