@@ -229,10 +229,28 @@ $pluginList = @(
   '@deepseek-ai/dsh-token-meter', '@deepseek-ai/dsh-compaction-basic',
   '@deepseek-ai/dsh-shell-env', '@deepseek-ai/dsh-tool-pwsh'
 )
-& $pnpmExec add -w $pluginList
-if ($LASTEXITCODE -ne 0) {
-  Write-Warn2 "插件链接未完全成功。可手动执行：cd $RepoDir; pnpm add -w <插件列表>（见 README）"
+# 插件链接必须成功：失败会导致 dsh 启动报 ERR_MODULE_NOT_FOUND（网络抖动时重试最多 3 次）
+$pluginsLinked = $false
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+  Write-Info "链接运行时插件（第 $attempt/3 次尝试）…"
+  & $pnpmExec add -w $pluginList
+  if ($LASTEXITCODE -eq 0) {
+    # 验证关键插件已出现在根 node_modules
+    $probe = Join-Path $RepoDir 'node_modules\@deepseek-ai\dsh-llm-deepseek'
+    if (Test-Path $probe) { $pluginsLinked = $true; break }
+    Write-Warn2 "插件目录未出现，重试 …"
+  } else {
+    Write-Warn2 "pnpm add 退出码 $LASTEXITCODE，重试 …"
+  }
+  Start-Sleep -Seconds 3
 }
+if (-not $pluginsLinked) {
+  Write-Fail "运行时插件链接失败（3 次重试均未成功）。请检查网络后重新运行本脚本，或手动执行："
+  Write-Fail "  cd $RepoDir; pnpm add -w $($pluginList -join ' ')"
+  Pop-Location
+  exit 1
+}
+Write-Info "运行时插件链接完成（18 个）✓"
 $sdkLib = Join-Path $RepoDir "packages\sdk\client\lib\index.js"
 if (-not (Test-Path $sdkLib)) {
   Write-Warn2 "未找到 SDK 构建产物 packages/sdk/client/lib/index.js，请确认构建成功（或去掉 -SkipBuild）。"
